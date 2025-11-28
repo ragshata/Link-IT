@@ -179,7 +179,7 @@ async def _ask_avatar(message: Message, state: FSMContext):
 
     await message.answer(
         "Шаг 2 из 7.\n"
-        "Отправь фото, которое будем считать аватаром в LinkIT, "
+        "Отправь фото, которое будем считать аватаром в Link IT, "
         "или выбери один из вариантов ниже.",
         reply_markup=kb.as_markup(),
     )
@@ -552,7 +552,7 @@ async def process_skill_callback(
         kb.adjust(1)
 
         await callback.message.edit_text(
-            "Шаг 7 из 7.\nВыбери свою основную цель в LinkIT:",
+            "Шаг 7 из 7.\nВыбери свою основную цель в Link IT:",
             reply_markup=kb.as_markup(),
         )
         await callback.answer()

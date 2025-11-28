@@ -305,7 +305,7 @@ async def devfeed_request_callback(
     kb.adjust(2)
 
     notify_text = (
-        "Тебе пришла заявка на сотрудничество в LinkIT.\n\n"
+        "Тебе пришла заявка на сотрудничество в Link IT.\n\n"
         "Профиль отправителя:\n\n"
         f"{sender_text}\n\n"
         "Контакты откроются, если ты примешь заявку."

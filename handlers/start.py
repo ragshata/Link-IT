@@ -44,12 +44,7 @@ async def cmd_start(
 
         await state.clear()
         await message.answer(
-            "Привет! Ты уже в LinkIT.\n\n"
-            "Можешь:\n"
-            "— посмотреть ленту разработчиков\n"
-            "— посмотреть ленту проектов\n"
-            "— создать новый проект\n"
-            "— открыть свой профиль.",
+            "Привет! Ты уже в Link IT.",
             reply_markup=kb.as_markup(resize_keyboard=True),
         )
         return

@@ -616,7 +616,7 @@ async def proj_apply_callback(
     project_text = format_project_card(project)
 
     notify_text = (
-        "На твой проект в LinkIT пришла новая заявка.\n\n"
+        "На твой проект в Link IT пришла новая заявка.\n\n"
         f"Проект:\n{project_text}\n\n"
         "Кандидат:\n\n"
         f"{applicant_text}\n\n"
