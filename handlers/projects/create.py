@@ -1,8 +1,8 @@
-# handlers/projects.py
+# handlers/projects/create.py
 
 from types import SimpleNamespace
 
-from aiogram import Router, F, Bot
+from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, CallbackQuery
@@ -12,18 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from constants import (
     STACK_OPTIONS,
     ROLE_OPTIONS,
-    STACK_LABELS,
     PROJECT_STATUS_OPTIONS,
     PROJECT_STATUS_LABELS,
 )
-from views import format_project_card, format_profile_public
-from services import (
-    create_user_project,
-    get_projects_feed,
-    get_project,
-    send_connection_request,
-    get_profile,
-)
+from views import format_project_card
+from services import create_user_project
 
 router = Router()
 
@@ -68,7 +61,7 @@ class ProjectStates(StatesGroup):
     edit_chat_link = State()
 
 
-# ===== ВСПОМОГАЛКИ =====
+# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 
 
 def _build_preview_project_from_state(data: dict) -> SimpleNamespace:
@@ -85,13 +78,32 @@ def _build_preview_project_from_state(data: dict) -> SimpleNamespace:
         looking_for_role=data.get("looking_for_role"),
         level=data.get("level"),
         extra=data.get("extra"),
+        team_limit=data.get("team_limit"),
+        chat_link=data.get("chat_link"),
         image_file_id=data.get("image_file_id"),
     )
 
 
 def _build_preview_keyboard() -> InlineKeyboardBuilder:
+    """
+    Клава под предпросмотром:
+    - опубликовать,
+    - перейти в меню редактирования,
+    - отменить.
+    """
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Опубликовать", callback_data="project_confirm:publish")
+    kb.button(text="✏️ Редактировать", callback_data="proj_edit:menu")
+    kb.button(text="❌ Отмена", callback_data="project_confirm:cancel")
+    kb.adjust(1, 2)
+    return kb
+
+
+def _build_edit_menu_keyboard() -> InlineKeyboardBuilder:
+    """
+    Меню выбора, что именно редактировать.
+    """
+    kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Название", callback_data="proj_edit:title")
     kb.button(text="✏️ Стек", callback_data="proj_edit:stack")
     kb.button(text="✏️ Идея", callback_data="proj_edit:idea")
@@ -100,14 +112,16 @@ def _build_preview_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="✏️ Кого ищем", callback_data="proj_edit:roles")
     kb.button(text="✏️ Уровень", callback_data="proj_edit:level")
     kb.button(text="✏️ Ожидания / формат", callback_data="proj_edit:extra")
-    kb.button(text="❌ Отмена", callback_data="project_confirm:cancel")
-    kb.adjust(1, 2, 2, 2, 2)
+    kb.button(text="✏️ Лимит команды", callback_data="proj_edit:team_limit")
+    kb.button(text="✏️ Ссылка на чат", callback_data="proj_edit:chat_link")
+    kb.button(text="⬅️ Назад", callback_data="proj_edit:back")
+    kb.adjust(1, 2, 2, 2, 2, 2)
     return kb
 
 
 async def _show_project_preview(message: Message, state: FSMContext):
     """
-    Показываем предпросмотр проекта (с фото, если есть) + кнопки редактирования / публикации.
+    Показываем предпросмотр проекта (с фото, если есть) + компактную клаву.
     """
     data = await state.get_data()
     preview_project = _build_preview_project_from_state(data)
@@ -133,96 +147,14 @@ async def _show_project_preview(message: Message, state: FSMContext):
         )
 
 
-# ===== ЛЕНТА ПРОЕКТОВ (карточки) =====
-
-
-async def _send_project_card(
-    *,
-    source_message: Message,
-    project,
-    bot: Bot,
-):
-    """
-    Одна карточка проекта:
-    - фото (если есть),
-    - описание,
-    - кнопки: отклик, предыдущий/следующий.
-    """
-    text = format_project_card(project)
-
-    kb = InlineKeyboardBuilder()
-    kb.button(
-        text="🤝 Откликнуться на проект",
-        callback_data=f"proj_apply:{project.id}",
-    )
-    kb.button(
-        text="⬅️ Предыдущий",
-        callback_data="proj_prev",
-    )
-    kb.button(
-        text="➡️ Следующий",
-        callback_data="proj_next",
-    )
-    kb.adjust(1, 2)
-
-    if getattr(project, "image_file_id", None):
-        await bot.send_photo(
-            chat_id=source_message.chat.id,
-            photo=project.image_file_id,
-            caption=text,
-            reply_markup=kb.as_markup(),
-        )
-    else:
-        await source_message.answer(
-            text,
-            reply_markup=kb.as_markup(),
-        )
-
-
-async def _get_projfeed_project_at_index(
-    *,
-    state: FSMContext,
-    session: AsyncSession,
-    requester_id: int,
-    new_index: int,
-):
-    """
-    Берём проект по индексу из сохранённого списка.
-    Своих проектов по желанию можно скипать.
-    """
-    data = await state.get_data()
-    ids: list[int] | None = data.get("projfeed_ids")
-
-    if not ids:
-        return None, None
-
-    if new_index < 0 or new_index >= len(ids):
-        return None, None
-
-    project_id = ids[new_index]
-    project = await get_project(session, project_id)
-    if not project:
-        return None, None
-
-    # не показываем свои проекты
-    if project.owner_telegram_id == requester_id:
-        if new_index + 1 < len(ids):
-            return await _get_projfeed_project_at_index(
-                state=state,
-                session=session,
-                requester_id=requester_id,
-                new_index=new_index + 1,
-            )
-        return None, None
-
-    await state.update_data(projfeed_index=new_index)
-    return project, new_index
-
-
-# ===== старт регистрации проекта (вызывается из меню) =====
+# ===== СТАРТ СОЗДАНИЯ ПРОЕКТА =====
 
 
 async def start_project_registration(message: Message, state: FSMContext):
+    """
+    Вызов этого метода — старт мастера создания проекта.
+    Можно дергать из других хендлеров (меню и т.п.).
+    """
     await state.clear()
     await state.set_state(ProjectStates.photo)
 
@@ -232,7 +164,7 @@ async def start_project_registration(message: Message, state: FSMContext):
 
     await message.answer(
         "Создаём новый проект.\n\n"
-        "Шаг 1 из 8.\n"
+        "Шаг 1.\n"
         "Пришли обложку проекта (фото) или нажми «Пропустить фото».",
         reply_markup=kb.as_markup(),
     )
@@ -257,7 +189,7 @@ async def project_photo_skip(callback: CallbackQuery, state: FSMContext):
 async def _ask_title(message: Message, state: FSMContext):
     await state.set_state(ProjectStates.title)
     await message.answer(
-        "Шаг 2 из 8.\n"
+        "Шаг 2.\n"
         "Напиши короткое название проекта.\n"
         "Например: «Платформа для IT-нетворкинга»."
     )
@@ -296,7 +228,7 @@ async def _ask_stack(message: Message, state: FSMContext):
     kb = _build_stack_keyboard(selected)
 
     await message.answer(
-        "Шаг 3 из 8.\n"
+        "Шаг 3.\n"
         "Выбери стек проекта. Можно выбрать несколько вариантов.\n"
         "Если чего-то не хватает — нажми «Другое» и впиши.\n"
         "Когда закончишь — нажми «Готово».",
@@ -344,7 +276,7 @@ async def project_stack_callback(callback: CallbackQuery, state: FSMContext):
 
     kb = _build_stack_keyboard(selected)
     await callback.message.edit_text(
-        "Шаг 3 из 8.\n"
+        "Шаг 3.\n"
         "Выбери стек проекта. Можно выбрать несколько вариантов.\n"
         "Если всё выбрал — нажми «Готово».",
         reply_markup=kb.as_markup(),
@@ -361,7 +293,7 @@ async def project_stack_custom(message: Message, state: FSMContext):
 async def _ask_idea(message: Message, state: FSMContext):
     await state.set_state(ProjectStates.idea)
     await message.answer(
-        "Шаг 4 из 8.\n"
+        "Шаг 4.\n"
         "Опиши идею проекта и текущее состояние.\n"
         "Например: что уже сделано, какие технологии, чего хочешь достичь."
     )
@@ -388,7 +320,7 @@ async def _ask_status(message: Message, state: FSMContext):
     kb.adjust(2)
 
     await message.answer(
-        "Шаг 5 из 8.\n" "На какой стадии сейчас проект?\n" "Выбери статус:",
+        "Шаг 5.\n" "На какой стадии сейчас проект?\n" "Выбери статус:",
         reply_markup=kb.as_markup(),
     )
 
@@ -414,7 +346,7 @@ async def project_status_callback(
 async def _ask_needs_now(message: Message, state: FSMContext):
     await state.set_state(ProjectStates.needs_now)
     await message.answer(
-        "Шаг 6 из 8.\n"
+        "Шаг 6.\n"
         "Расскажи, что <b>сейчас нужно</b> проекту:\n"
         "- какие роли ищешь;\n"
         "- какие задачи в приоритете;\n"
@@ -453,7 +385,7 @@ async def _ask_looking_for(message: Message, state: FSMContext):
     kb = _build_looking_keyboard(selected)
 
     await message.answer(
-        "Шаг 7 из 8.\n"
+        "Шаг 7.\n"
         "Кого ты ищешь в проект? Можно выбрать несколько ролей.\n"
         "Если не хочешь указывать — нажми «Пропустить».",
         reply_markup=kb.as_markup(),
@@ -493,7 +425,7 @@ async def project_looking_for_callback(
 
     kb = _build_looking_keyboard(selected)
     await callback.message.edit_text(
-        "Шаг 7 из 8.\n"
+        "Шаг 7.\n"
         "Кого ты ищешь в проект? Можно выбрать несколько ролей.\n"
         "Когда закончишь — нажми «Готово».",
         reply_markup=kb.as_markup(),
@@ -515,7 +447,7 @@ async def _ask_level(message: Message, state: FSMContext):
     kb.adjust(2)
 
     await message.edit_text(
-        "Шаг 8 из 8.\n" "Какой уровень тебя больше всего интересует в этом проекте?",
+        "Шаг 8.\n" "Какой уровень тебя больше всего интересует в этом проекте?",
         reply_markup=kb.as_markup(),
     )
 
@@ -538,14 +470,15 @@ async def project_level_callback(
     await state.set_state(ProjectStates.extra)
 
     await callback.message.edit_text(
-        "Финал.\n"
-        "Напиши важные детали: формат участия (вечера/выходные), занятость, нюансы.\n"
+        "Шаг 9.\n"
+        "Напиши важные детали: формат участия (вечера/выходные), "
+        "занятость, нюансы.\n"
         "Если ничего добавлять не хочешь — напиши «-».",
     )
     await callback.answer()
 
 
-# ===== Финал: extra + ПРЕДПРОСМОТР =====
+# ===== Шаг 9: extra + переход к лимиту команды =====
 
 
 @router.message(ProjectStates.extra, F.text)
@@ -558,10 +491,137 @@ async def project_extra(
         extra = None
 
     await state.update_data(extra=extra)
+    await _ask_team_limit(message, state)
+
+
+# ===== Шаг 10: лимит команды =====
+
+
+def _build_team_limit_keyboard() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text="✏️ Ввести число людей",
+        callback_data="project_team_limit:custom",
+    )
+    kb.button(
+        text="Пропустить",
+        callback_data="project_team_limit:skip",
+    )
+    kb.adjust(1, 1)
+    return kb
+
+
+async def _ask_team_limit(message: Message, state: FSMContext):
+    await state.set_state(ProjectStates.team_limit)
+    kb = _build_team_limit_keyboard()
+    await message.answer(
+        "Шаг 10.\n"
+        "Сколько людей ты примерно ищешь в команду?\n\n"
+        "Можно указать чёткое число (например, 3 или 5),\n"
+        "или пока не указывать (если не уверен).",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(
+    ProjectStates.team_limit, F.data.startswith("project_team_limit:")
+)
+async def project_team_limit_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    _, code = callback.data.split(":", 1)
+
+    if code == "skip":
+        await state.update_data(team_limit=None)
+        await callback.answer("Лимит по людям не указан", show_alert=False)
+        await _ask_chat_link(callback.message, state)
+        return
+
+    if code == "custom":
+        await state.set_state(ProjectStates.team_limit_custom)
+        await callback.answer()
+        await callback.message.answer(
+            "Напиши, сколько людей тебе нужно в команду <b>числом</b>.\n\n"
+            "Например: 3 или 5.\n"
+            "Если передумал и не хочешь указывать — отправь «-».",
+        )
+        return
+
+
+@router.message(ProjectStates.team_limit_custom, F.text)
+async def project_team_limit_custom_message(
+    message: Message,
+    state: FSMContext,
+):
+    raw = (message.text or "").strip()
+
+    if raw in ("-", "—", ""):
+        await state.update_data(team_limit=None)
+        await _ask_chat_link(message, state)
+        return
+
+    try:
+        value = int(raw)
+        if value <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer(
+            "Нужно указать положительное число.\n"
+            "Например: 3 или 5.\n"
+            "Или отправь «-», чтобы не указывать лимит."
+        )
+        return
+
+    await state.update_data(team_limit=value)
+    await _ask_chat_link(message, state)
+
+
+# ===== Шаг 11: ссылка на чат =====
+
+
+async def _ask_chat_link(message: Message, state: FSMContext):
+    await state.set_state(ProjectStates.chat_link)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Пропустить", callback_data="project_chat_link:skip")
+    kb.adjust(1)
+
+    await message.answer(
+        "Шаг 11.\n"
+        "Если у проекта есть чат в Telegram или Discord — пришли ссылку.\n"
+        "Например: https://t.me/your_project_chat\n\n"
+        "Если чата пока нет — нажми «Пропустить» или отправь «-».",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(ProjectStates.chat_link, F.data == "project_chat_link:skip")
+async def project_chat_link_skip(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    await state.update_data(chat_link=None)
+    await callback.answer("Без ссылки на чат", show_alert=False)
+    await _show_project_preview(callback.message, state)
+
+
+@router.message(ProjectStates.chat_link, F.text)
+async def project_chat_link_message(
+    message: Message,
+    state: FSMContext,
+):
+    raw = (message.text or "").strip()
+    if raw in ("-", "—", ""):
+        chat_link = None
+    else:
+        chat_link = raw
+
+    await state.update_data(chat_link=chat_link)
     await _show_project_preview(message, state)
 
 
-# ===== Предпросмотр: действия =====
+# ===== Предпросмотр: действия (публикация / отмена / меню редактирования) =====
 
 
 @router.callback_query(F.data == "project_confirm:cancel")
@@ -611,6 +671,8 @@ async def project_confirm_publish(
     looking_for_role = data.get("looking_for_role")
     level = data.get("level")
     extra = data.get("extra")
+    team_limit = data.get("team_limit")
+    chat_link = data.get("chat_link")
 
     project = await create_user_project(
         session,
@@ -624,16 +686,46 @@ async def project_confirm_publish(
         image_file_id=image_file_id,
         status=status,
         needs_now=needs_now,
+        team_limit=team_limit,
+        chat_link=chat_link,
     )
 
     await callback.answer("Проект опубликован ✅", show_alert=False)
 
     final_text = (
         "Проект сохранён и добавлен в ленту.\n\n"
-        "Его смогут увидеть другие пользователи в разделе «🚀 Лента проектов»."
+        "Его смогут увидеть другие пользователи в разделе «🚀 Лента проектов».\n\n"
+        f"{format_project_card(project)}"
     )
 
     await callback.message.answer(final_text)
+
+
+@router.callback_query(ProjectStates.confirm, F.data == "proj_edit:menu")
+async def proj_edit_menu_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    kb = _build_edit_menu_keyboard()
+    await callback.answer()
+    await callback.message.answer(
+        "Что именно хочешь отредактировать?",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(ProjectStates.confirm, F.data == "proj_edit:back")
+async def proj_edit_back_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    await _show_project_preview(callback.message, state)
 
 
 # ===== РЕДАКТИРОВАНИЕ: НАЗВАНИЕ =====
@@ -874,7 +966,6 @@ async def proj_edit_stack_custom_message(
     state: FSMContext,
 ):
     await state.update_data(edit_stack_custom=message.text.strip())
-    # вернёмся к выбору стека (редактирование)
     await state.set_state(ProjectStates.edit_stack)
     kb = _build_stack_keyboard(
         (await state.get_data()).get("edit_stack_selected", []) or []
@@ -1009,208 +1100,117 @@ async def proj_edit_level_choice(
     await _show_project_preview(callback.message, state)
 
 
-# ===== Лента проектов (кнопка в меню) =====
+# ===== РЕДАКТИРОВАНИЕ: ЛИМИТ КОМАНДЫ =====
 
 
-@router.message(F.text == "🚀 Лента проектов")
-async def projects_feed_handler(
+@router.callback_query(ProjectStates.confirm, F.data == "proj_edit:team_limit")
+async def proj_edit_team_limit_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    data = await state.get_data()
+    cur = data.get("team_limit")
+    if cur is None:
+        cur_label = "не указан"
+    else:
+        cur_label = str(cur)
+
+    await state.set_state(ProjectStates.edit_team_limit)
+    await callback.answer()
+
+    kb = _build_team_limit_keyboard()
+    await callback.message.answer(
+        f"Сейчас лимит по людям: <b>{cur_label}</b>.\n\n"
+        "Выбери — задать новое число или не указывать:",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(
+    ProjectStates.edit_team_limit, F.data.startswith("project_team_limit:")
+)
+async def proj_edit_team_limit_choice(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    _, code = callback.data.split(":", 1)
+
+    if code == "skip":
+        await state.update_data(team_limit=None)
+        await callback.answer("Лимит убран", show_alert=False)
+        await _show_project_preview(callback.message, state)
+        return
+
+    if code == "custom":
+        await state.set_state(ProjectStates.edit_team_limit_custom)
+        await callback.answer()
+        await callback.message.answer(
+            "Напиши новый лимит по людям <b>числом</b>.\n"
+            "Например: 3 или 5.\n"
+            "Если хочешь убрать лимит — отправь «-».",
+        )
+        return
+
+
+@router.message(ProjectStates.edit_team_limit_custom, F.text)
+async def proj_edit_team_limit_custom_message(
     message: Message,
     state: FSMContext,
-    session: AsyncSession,
-    bot: Bot,
 ):
-    projects = await get_projects_feed(session, limit=50)
+    raw = (message.text or "").strip()
 
-    projects = [p for p in projects if p.owner_telegram_id != message.from_user.id]
-
-    if not projects:
-        await message.answer(
-            "Пока нет проектов в ленте.\n"
-            "Будь первым — создай свой через «🆕 Новый проект»."
-        )
+    if raw in ("-", "—", ""):
+        await state.update_data(team_limit=None)
+        await _show_project_preview(message, state)
         return
-
-    await state.update_data(
-        projfeed_ids=[p.id for p in projects],
-        projfeed_index=0,
-    )
-
-    await _send_project_card(
-        source_message=message,
-        project=projects[0],
-        bot=bot,
-    )
-
-
-@router.callback_query(F.data == "proj_next")
-async def proj_next_callback(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session: AsyncSession,
-    bot: Bot,
-):
-    data = await state.get_data()
-    index: int | None = data.get("projfeed_index", 0)
-    if index is None:
-        index = 0
-
-    new_index = index + 1
-    project, _ = await _get_projfeed_project_at_index(
-        state=state,
-        session=session,
-        requester_id=callback.from_user.id,
-        new_index=new_index,
-    )
-
-    if not project:
-        await callback.answer("Это был последний проект", show_alert=False)
-        await callback.message.answer(
-            "Ты посмотрел все проекты в ленте.\n" "Загляни позже — появятся новые."
-        )
-        return
-
-    await callback.answer()
-    await _send_project_card(
-        source_message=callback.message,
-        project=project,
-        bot=bot,
-    )
 
     try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-
-@router.callback_query(F.data == "proj_prev")
-async def proj_prev_callback(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session: AsyncSession,
-    bot: Bot,
-):
-    data = await state.get_data()
-    index: int | None = data.get("projfeed_index", 0)
-    if index is None:
-        index = 0
-
-    new_index = index - 1
-    if new_index < 0:
-        await callback.answer("Это первый проект", show_alert=False)
-        return
-
-    project, _ = await _get_projfeed_project_at_index(
-        state=state,
-        session=session,
-        requester_id=callback.from_user.id,
-        new_index=new_index,
-    )
-
-    if not project:
-        await callback.answer("Это первый проект", show_alert=False)
-        return
-
-    await callback.answer()
-    await _send_project_card(
-        source_message=callback.message,
-        project=project,
-        bot=bot,
-    )
-
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-
-@router.callback_query(F.data.startswith("proj_apply:"))
-async def proj_apply_callback(
-    callback: CallbackQuery,
-    session: AsyncSession,
-    bot: Bot,
-):
-    """
-    Отклик на проект:
-    - создаём ConnectionRequest между откликнувшимся и владельцем проекта,
-    - владельцу уходит уведомление с фоткой и описанием откликнувшегося,
-      контакты скрыты до принятия.
-    """
-    _, raw_id = callback.data.split(":", 1)
-    try:
-        project_id = int(raw_id)
+        value = int(raw)
+        if value <= 0:
+            raise ValueError
     except ValueError:
-        await callback.answer("Что-то пошло не так", show_alert=True)
-        return
-
-    project = await get_project(session, project_id)
-    if not project:
-        await callback.answer("Проект не найден", show_alert=True)
-        return
-
-    from_id = callback.from_user.id
-    to_id = project.owner_telegram_id
-
-    req, reason = await send_connection_request(
-        session,
-        from_id=from_id,
-        to_id=to_id,
-    )
-
-    if reason == "self":
-        await callback.answer("Это твой проект 😄", show_alert=True)
-        return
-
-    if reason == "exists":
-        await callback.answer(
-            "Ты уже откликался на этот проект. Ждём ответа.",
-            show_alert=False,
+        await message.answer(
+            "Нужно указать положительное число.\n"
+            "Например: 3 или 5.\n"
+            "Или отправь «-», чтобы убрать лимит."
         )
         return
 
-    await callback.answer("Заявка на проект отправлена 🎯", show_alert=False)
+    await state.update_data(team_limit=value)
+    await _show_project_preview(message, state)
 
-    applicant_profile = await get_profile(session, from_id)
-    applicant_text = format_profile_public(applicant_profile)
-    project_text = format_project_card(project)
 
-    notify_text = (
-        "На твой проект в Link IT пришла новая заявка.\n\n"
-        f"Проект:\n{project_text}\n\n"
-        "Кандидат:\n\n"
-        f"{applicant_text}\n\n"
-        "Контакты откликнувшегося откроются, если ты примешь заявку."
-    )
+# ===== РЕДАКТИРОВАНИЕ: ССЫЛКА НА ЧАТ =====
 
-    kb = InlineKeyboardBuilder()
-    kb.button(
-        text="✅ Принять",
-        callback_data=f"conn_accept:{req.id}",
-    )
-    kb.button(
-        text="❌ Отклонить",
-        callback_data=f"conn_reject:{req.id}",
-    )
-    kb.adjust(2)
 
-    try:
-        if applicant_profile and applicant_profile.avatar_file_id:
-            await bot.send_photo(
-                chat_id=to_id,
-                photo=applicant_profile.avatar_file_id,
-                caption=notify_text,
-                reply_markup=kb.as_markup(),
-            )
-        else:
-            await bot.send_message(
-                chat_id=to_id,
-                text=notify_text,
-                reply_markup=kb.as_markup(),
-            )
-    except Exception:
-        pass
+@router.callback_query(ProjectStates.confirm, F.data == "proj_edit:chat_link")
+async def proj_edit_chat_link_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    data = await state.get_data()
+    cur = data.get("chat_link") or "—"
 
+    await state.set_state(ProjectStates.edit_chat_link)
+    await callback.answer()
     await callback.message.answer(
-        "Заявка на участие в проекте отправлена.\n\n"
-        "Когда владелец проекта ответит, я пришлю тебе уведомление: "
-        "либо контакты, либо отказ."
+        "Сейчас указана ссылка на чат:\n"
+        f"{cur}\n\n"
+        "Пришли новую ссылку на чат проекта в Telegram или Discord.\n"
+        "Если хочешь убрать ссылку — отправь «-».",
     )
+
+
+@router.message(ProjectStates.edit_chat_link, F.text)
+async def proj_edit_chat_link_message(
+    message: Message,
+    state: FSMContext,
+):
+    raw = (message.text or "").strip()
+    if raw in ("-", "—", ""):
+        chat_link = None
+    else:
+        chat_link = raw
+
+    await state.update_data(chat_link=chat_link)
+    await _show_project_preview(message, state)

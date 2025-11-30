@@ -8,6 +8,8 @@ from repositories import (
     get_connection_request_by_id,
     set_connection_request_status,
 )
+from datetime import datetime, timezone
+from sqlalchemy import select
 
 
 async def send_connection_request(
@@ -47,11 +49,16 @@ async def accept_connection_request(
     *,
     request_id: int,
 ) -> ConnectionRequest | None:
-    return await set_connection_request_status(
-        session,
-        request_id=request_id,
-        status="accepted",
-    )
+    q = select(ConnectionRequest).where(ConnectionRequest.id == request_id)
+    req = (await session.execute(q)).scalar_one_or_none()
+    if not req:
+        return None
+
+    req.status = "accepted"
+    req.accepted_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(req)
+    return req
 
 
 async def reject_connection_request(

@@ -1,11 +1,12 @@
-# repositories.py (фрагмент)
-
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
 from typing import Sequence
 
+from sqlalchemy import select, desc
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Profile, Project, ConnectionRequest
+
+
+# ===== ПРОФИЛИ =====
 
 
 async def get_profile_by_telegram_id(
@@ -115,7 +116,7 @@ async def search_profiles(
     return result.scalars().all()
 
 
-# ==== ПРОЕКТЫ ====
+# ===== ПРОЕКТЫ =====
 
 
 async def create_project(
@@ -129,7 +130,21 @@ async def create_project(
     level: str | None = None,
     extra: str | None = None,
     image_file_id: str | None = None,
+    status: str | None = None,
+    needs_now: str | None = None,
+    team_limit: int | None = None,
+    chat_link: str | None = None,
 ) -> Project:
+    """
+    Репозиторий для создания проекта.
+
+    status:
+      - если передали — сохраняем как есть (например: "idea", "prototype", "frozen").
+      - если None — подставляем дефолт "idea".
+    """
+    if status is None:
+        status = "idea"
+
     project = Project(
         owner_telegram_id=owner_telegram_id,
         title=title,
@@ -139,6 +154,10 @@ async def create_project(
         level=level,
         extra=extra,
         image_file_id=image_file_id,
+        status=status,
+        needs_now=needs_now,
+        team_limit=team_limit,
+        chat_link=chat_link,
     )
     session.add(project)
     await session.commit()
@@ -146,28 +165,48 @@ async def create_project(
     return project
 
 
-async def get_project_by_id(
-    session: AsyncSession,
-    project_id: int,
-) -> Project | None:
-    stmt = select(Project).where(Project.id == project_id)
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
-
-
 async def list_projects(
     session: AsyncSession,
     *,
     limit: int = 20,
+    role: str | None = None,
+    stack: str | None = None,
+    level: str | None = None,
 ) -> list[Project]:
-    stmt = (
-        select(Project)
-        .where(Project.is_active.is_(True))
-        .order_by(desc(Project.created_at))
-        .limit(limit)
-    )
+    """
+    Базовый список проектов из БД с простыми фильтрами.
+    В сервисном слое (services/projects.py) мы сверху ещё можем
+    дополнительно фильтровать по заявкам/владельцу и т.п.
+    """
+    stmt = select(Project).where(Project.is_active.is_(True))
+
+    if role:
+        stmt = stmt.where(Project.looking_for_role.ilike(f"%{role}%"))
+
+    if stack:
+        stmt = stmt.where(Project.stack.ilike(f"%{stack}%"))
+
+    if level:
+        stmt = stmt.where(Project.level == level)
+
+    stmt = stmt.order_by(desc(Project.created_at)).limit(limit)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def get_project_by_id(
+    session: AsyncSession,
+    project_id: int,
+) -> Project | None:
+    stmt = select(Project).where(
+        Project.id == project_id,
+        Project.is_active.is_(True),
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+# ===== ЗАЯВКИ НА КОННЕКТ / ПРОЕКТ =====
 
 
 async def get_connection_request_by_id(
@@ -185,6 +224,10 @@ async def get_pending_request_between(
     from_id: int,
     to_id: int,
 ) -> ConnectionRequest | None:
+    """
+    Старая логика "чел -> чел": есть ли уже висящая заявка?
+    Для заявок на проект мы смотрим по project_id отдельно в сервисах.
+    """
     stmt = select(ConnectionRequest).where(
         ConnectionRequest.from_telegram_id == from_id,
         ConnectionRequest.to_telegram_id == to_id,
@@ -199,10 +242,17 @@ async def create_connection_request(
     *,
     from_id: int,
     to_id: int,
+    project_id: int | None = None,
 ) -> ConnectionRequest:
+    """
+    Создание заявки:
+    - для матчей "разраб → разраб" project_id = None
+    - для отклика на проект "разраб → владелец проекта" project_id = id проекта
+    """
     req = ConnectionRequest(
         from_telegram_id=from_id,
         to_telegram_id=to_id,
+        project_id=project_id,
         status="pending",
     )
     session.add(req)
@@ -228,15 +278,3 @@ async def set_connection_request_status(
     await session.commit()
     await session.refresh(req)
     return req
-
-
-async def get_project_by_id(
-    session: AsyncSession,
-    project_id: int,
-) -> Project | None:
-    stmt = select(Project).where(
-        Project.id == project_id,
-        Project.is_active.is_(True),
-    )
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
