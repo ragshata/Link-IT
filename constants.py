@@ -58,8 +58,13 @@ STACK_OPTIONS = {
     ],
 }
 
-# Лейблы для кодов стеков (для красивого вывода в профиле)
-STACK_LABELS = {
+# ---------------------------------------------------------------------
+# STACK_LABELS (автоматически)
+# ---------------------------------------------------------------------
+# Вместо ручного словаря (который вы 100% забудете обновить),
+# генерируем лейблы из STACK_OPTIONS.
+# Плюс оверрайды на "группы" и общие коды.
+_STACK_LABEL_OVERRIDES: dict[str, str] = {
     "backend": "Backend",
     "frontend": "Frontend",
     "fullstack": "Fullstack",
@@ -68,19 +73,57 @@ STACK_LABELS = {
     "qa": "QA",
     "product": "Product",
     "design": "Design",
-    "python": "Python",
-    "golang": "Golang",
-    "nodejs": "Node.js",
-    "java": "Java",
-    "php": "PHP",
-    "react": "React",
-    "vue": "Vue",
-    "angular": "Angular",
-    "svelte": "Svelte",
-    "py_react": "Python + React",
-    "node_react": "Node.js + React",
-    "php_vue": "PHP + Vue",
+    "other": "Другое",
 }
+
+
+def build_stack_labels() -> dict[str, str]:
+    labels: dict[str, str] = dict(_STACK_LABEL_OVERRIDES)
+    for opts in STACK_OPTIONS.values():
+        for label, code in opts:
+            labels.setdefault(code, label)
+    return labels
+
+
+STACK_LABELS = build_stack_labels()
+
+
+def format_stack_value(stack_raw: str | None) -> str:
+    """
+    Делает стек человеко-читаемым.
+    Поддерживает составные значения, которые вы храните строкой, например:
+      - "python"
+      - "python, nodejs"
+      - "python, react; FastAPI"
+      - "py_react; docker"
+    Правила:
+      - разделитель групп: ';'
+      - разделитель элементов внутри группы: ','
+    """
+    if not stack_raw:
+        return "—"
+
+    # Если пришёл ровно один код, отдадим красиво
+    if stack_raw in STACK_LABELS:
+        return STACK_LABELS[stack_raw]
+
+    parts: list[str] = []
+    for group in stack_raw.split(";"):
+        group = group.strip()
+        if not group:
+            continue
+
+        tokens = [t.strip() for t in group.split(",") if t.strip()]
+        if not tokens:
+            continue
+
+        mapped = [STACK_LABELS.get(t, t) for t in tokens]
+        parts.append(", ".join(mapped))
+
+    return (
+        "; ".join(parts) if parts else (STACK_LABELS.get(stack_raw, stack_raw) or "—")
+    )
+
 
 # Популярные фреймворки по языкам/стекам
 # Для fullstack-комбинаций даём сразу набор backend+frontend фреймворков
@@ -159,7 +202,6 @@ GOAL_OPTIONS = [
     ("Найти проект", "find_project"),
     ("Найти джуна/помощника", "find_junior"),
 ]
-
 
 # 🔥 Статусы проекта (жизненный цикл)
 PROJECT_STATUS_OPTIONS = [

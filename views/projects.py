@@ -2,7 +2,8 @@
 from typing import Sequence
 
 from models import Project
-from constants import STACK_LABELS, ROLE_OPTIONS
+from constants import STACK_LABELS, ROLE_OPTIONS, format_stack_value
+
 from views.safe import html_safe
 
 ROLE_LABELS = {code: label for (label, code) in ROLE_OPTIONS}
@@ -13,7 +14,7 @@ def format_project_card(project: Project) -> str:
     Одна карточка проекта (лента + предпросмотр).
     """
     stack_code = getattr(project, "stack", None)
-    stack_label = html_safe(STACK_LABELS.get(stack_code, stack_code or "—"))
+    stack_label = html_safe(format_stack_value(stack_code))
 
     role_code = getattr(project, "looking_for_role", None)
     role_label = html_safe(ROLE_LABELS.get(role_code, role_code or "—"))

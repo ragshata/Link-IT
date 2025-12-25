@@ -10,10 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from services import (
     get_profile,
-    send_connection_request,
+    send_connect_request,
 )
 from views import format_profile_public, html_safe
-
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -269,7 +268,7 @@ async def _process_connection_request(
         bool(greeting),
     )
 
-    req, reason = await send_connection_request(
+    req, reason = await send_connect_request(
         session,
         from_id=from_id,
         to_id=target_tg_id,
@@ -300,7 +299,7 @@ async def _process_connection_request(
     kb.button(text="❌ Отклонить", callback_data=f"conn_reject:{req.id}")
     kb.adjust(2)
 
-    safe_greeting = html_safe(greeting, default="—") if greeting else None
+    safe_greeting = html_safe(greeting) if greeting else None
 
     if safe_greeting:
         notify_text = (
@@ -539,9 +538,6 @@ async def devfeed_req_greeting_message(
         return
 
     greeting = (message.text or "").strip()
-    if len(greeting) > 500:
-        await message.answer("Слишком длинно. Уложись примерно в 500 символов 🙂")
-        return
     if not greeting:
         await message.answer("Сообщение пустое. Напиши хоть пару слов 🙂")
         return

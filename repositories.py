@@ -1,27 +1,51 @@
-from typing import Sequence
+from datetime import datetime, timedelta
 
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Profile, Project, ConnectionRequest
+from models import Profile, ConnectionRequest, Project
 
 
-# ===== ПРОФИЛИ =====
+# ---------- профили ----------
+
+
+async def ensure_profile_exists(
+    session: AsyncSession,
+    telegram_id: int,
+    username: str | None = None,
+) -> Profile:
+    profile = await session.scalar(
+        select(Profile).where(Profile.telegram_id == telegram_id)
+    )
+    if profile:
+        if username and profile.username != username:
+            profile.username = username
+            await session.commit()
+            await session.refresh(profile)
+        return profile
+
+    new_profile = Profile(
+        telegram_id=telegram_id,
+        username=username,
+    )
+    session.add(new_profile)
+    await session.commit()
+    await session.refresh(new_profile)
+    return new_profile
 
 
 async def get_profile_by_telegram_id(
-    session: AsyncSession,
-    telegram_id: int,
+    session: AsyncSession, telegram_id: int
 ) -> Profile | None:
-    stmt = select(Profile).where(Profile.telegram_id == telegram_id)
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
+    return await session.scalar(
+        select(Profile).where(Profile.telegram_id == telegram_id)
+    )
 
 
 async def update_profile(
     session: AsyncSession,
-    *,
     telegram_id: int,
+    *,
     first_name: str | None = None,
     avatar_file_id: str | None = None,
     role: str | None = None,
@@ -57,94 +81,35 @@ async def update_profile(
     return profile
 
 
-async def create_profile(
-    session: AsyncSession,
-    *,
-    telegram_id: int,
-    username: str | None,
-) -> Profile:
-    profile = Profile(
-        telegram_id=telegram_id,
-        username=username,
-    )
-    session.add(profile)
-    await session.commit()
-    await session.refresh(profile)
-    return profile
-
-
-async def get_or_create_profile(
-    session: AsyncSession,
-    *,
-    telegram_id: int,
-    username: str | None,
-) -> Profile:
-    profile = await get_profile_by_telegram_id(session, telegram_id)
-    if profile:
-        return profile
-
-    return await create_profile(
-        session,
-        telegram_id=telegram_id,
-        username=username,
-    )
-
-
 async def search_profiles(
-    session: AsyncSession,
-    *,
-    goal: str | None = None,
-    role: str | None = None,
-    exclude_telegram_id: int | None = None,
-    limit: int = 20,
-) -> Sequence[Profile]:
-    stmt = select(Profile).where(Profile.is_active.is_(True))
-
-    if goal:
-        like_expr = f"%{goal.lower()}%"
-        stmt = stmt.where(Profile.goals.ilike(like_expr))
-
-    if role:
-        stmt = stmt.where(Profile.role.ilike(role.lower()))
-
-    if exclude_telegram_id:
-        stmt = stmt.where(Profile.telegram_id != exclude_telegram_id)
-
-    stmt = stmt.limit(limit)
-
-    result = await session.execute(stmt)
-    return result.scalars().all()
+    session: AsyncSession, *, exclude_id: int | None = None
+) -> list[Profile]:
+    query = select(Profile)
+    if exclude_id is not None:
+        query = query.where(Profile.telegram_id != exclude_id)
+    result = await session.scalars(query.order_by(Profile.id.desc()))
+    return list(result)
 
 
-# ===== ПРОЕКТЫ =====
+# ---------- проекты ----------
 
 
 async def create_project(
     session: AsyncSession,
     *,
     owner_telegram_id: int,
-    title: str,
+    title: str | None,
     stack: str | None,
-    idea: str,
-    looking_for_role: str | None = None,
-    level: str | None = None,
-    extra: str | None = None,
-    image_file_id: str | None = None,
-    status: str | None = None,
-    needs_now: str | None = None,
+    idea: str | None,
+    looking_for_role: str | None,
+    level: str | None,
+    extra: str | None,
+    image_file_id: str | None,
+    status: str,
+    needs_now: str | None,
     team_limit: int | None = None,
     chat_link: str | None = None,
 ) -> Project:
-    """
-    Репозиторий для создания проекта.
-
-    status:
-      - если передали — сохраняем как есть (например: "idea", "prototype", "frozen").
-      - если None — подставляем дефолт "idea".
-    """
-    if status is None:
-        status = "idea"
-
     project = Project(
         owner_telegram_id=owner_telegram_id,
         title=title,
@@ -158,6 +123,7 @@ async def create_project(
         needs_now=needs_now,
         team_limit=team_limit,
         chat_link=chat_link,
+        current_members=1,
     )
     session.add(project)
     await session.commit()
@@ -165,95 +131,21 @@ async def create_project(
     return project
 
 
-async def list_projects(
-    session: AsyncSession,
-    *,
-    limit: int = 20,
-    role: str | None = None,
-    stack: str | None = None,
-    level: str | None = None,
+async def get_project_by_id(session: AsyncSession, project_id: int) -> Project | None:
+    return await session.scalar(select(Project).where(Project.id == project_id))
+
+
+async def get_projects(
+    session: AsyncSession, *, exclude_owner_id: int | None = None
 ) -> list[Project]:
-    """
-    Базовый список проектов из БД с простыми фильтрами.
-    В сервисном слое (services/projects.py) мы сверху ещё можем
-    дополнительно фильтровать по заявкам/владельцу и т.п.
-    """
-    stmt = select(Project).where(Project.is_active.is_(True))
-
-    if role:
-        stmt = stmt.where(Project.looking_for_role.ilike(f"%{role}%"))
-
-    if stack:
-        stmt = stmt.where(Project.stack.ilike(f"%{stack}%"))
-
-    if level:
-        stmt = stmt.where(Project.level == level)
-
-    stmt = stmt.order_by(desc(Project.created_at)).limit(limit)
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
+    query = select(Project)
+    if exclude_owner_id is not None:
+        query = query.where(Project.owner_telegram_id != exclude_owner_id)
+    result = await session.scalars(query.order_by(Project.id.desc()))
+    return list(result)
 
 
-async def get_project_by_id(
-    session: AsyncSession,
-    project_id: int,
-) -> Project | None:
-    stmt = select(Project).where(
-        Project.id == project_id,
-        Project.is_active.is_(True),
-    )
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
-
-
-# ===== ЗАЯВКИ НА КОННЕКТ / ПРОЕКТ =====
-
-
-async def get_connection_request_by_id(
-    session: AsyncSession,
-    request_id: int,
-) -> ConnectionRequest | None:
-    stmt = select(ConnectionRequest).where(ConnectionRequest.id == request_id)
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
-
-
-async def get_pending_request_between(
-    session: AsyncSession,
-    *,
-    from_id: int,
-    to_id: int,
-) -> ConnectionRequest | None:
-    """
-    Старая логика "чел -> чел": есть ли уже висящая заявка?
-    Для заявок на проект мы смотрим по project_id отдельно в сервисах.
-    """
-    stmt = select(ConnectionRequest).where(
-        ConnectionRequest.from_telegram_id == from_id,
-        ConnectionRequest.to_telegram_id == to_id,
-        ConnectionRequest.status == "pending",
-    )
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
-
-
-async def count_connection_requests_from_user_today(
-    session: AsyncSession,
-    *,
-    from_id: int,
-) -> int:
-    """Сколько заявок пользователь отправил за текущие сутки (UTC)."""
-    from datetime import datetime as _dt
-
-    now = _dt.utcnow()
-    day_start = _dt(year=now.year, month=now.month, day=now.day)
-
-    stmt = select(func.count(ConnectionRequest.id)).where(
-        ConnectionRequest.from_telegram_id == from_id,
-        ConnectionRequest.created_at >= day_start,
-    )
-    result = await session.execute(stmt)
-    return result.scalar_one()
+# ---------- заявки на коннекты / проект ----------
 
 
 async def create_connection_request(
@@ -263,11 +155,6 @@ async def create_connection_request(
     to_id: int,
     project_id: int | None = None,
 ) -> ConnectionRequest:
-    """
-    Создание заявки:
-    - для матчей "разраб → разраб" project_id = None
-    - для отклика на проект "разраб → владелец проекта" project_id = id проекта
-    """
     req = ConnectionRequest(
         from_telegram_id=from_id,
         to_telegram_id=to_id,
@@ -280,6 +167,79 @@ async def create_connection_request(
     return req
 
 
+async def get_pending_request_between(
+    session: AsyncSession,
+    *,
+    from_id: int,
+    to_id: int,
+) -> ConnectionRequest | None:
+    query = select(ConnectionRequest).where(
+        ConnectionRequest.from_telegram_id == from_id,
+        ConnectionRequest.to_telegram_id == to_id,
+        ConnectionRequest.status == "pending",
+    )
+    return await session.scalar(query)
+
+
+async def get_pending_connect_request_between(
+    session: AsyncSession,
+    *,
+    from_id: int,
+    to_id: int,
+) -> ConnectionRequest | None:
+    """Pending обычная заявка на коннект (project_id IS NULL)."""
+    query = select(ConnectionRequest).where(
+        ConnectionRequest.from_telegram_id == from_id,
+        ConnectionRequest.to_telegram_id == to_id,
+        ConnectionRequest.status == "pending",
+        ConnectionRequest.project_id.is_(None),
+    )
+    return await session.scalar(query)
+
+
+async def get_pending_project_request_between(
+    session: AsyncSession,
+    *,
+    from_id: int,
+    to_id: int,
+    project_id: int,
+) -> ConnectionRequest | None:
+    """Pending проектная заявка (строго по project_id)."""
+    query = select(ConnectionRequest).where(
+        ConnectionRequest.from_telegram_id == from_id,
+        ConnectionRequest.to_telegram_id == to_id,
+        ConnectionRequest.status == "pending",
+        ConnectionRequest.project_id == project_id,
+    )
+    return await session.scalar(query)
+
+
+async def count_connection_requests_from_user_today(
+    session: AsyncSession,
+    *,
+    from_id: int,
+) -> int:
+    now = datetime.utcnow()
+    start_of_day = datetime(now.year, now.month, now.day)
+    end_of_day = start_of_day + timedelta(days=1)
+
+    query = select(func.count(ConnectionRequest.id)).where(
+        ConnectionRequest.from_telegram_id == from_id,
+        ConnectionRequest.created_at >= start_of_day,
+        ConnectionRequest.created_at < end_of_day,
+    )
+    return int(await session.scalar(query) or 0)
+
+
+async def get_connection_request_by_id(
+    session: AsyncSession,
+    request_id: int,
+) -> ConnectionRequest | None:
+    return await session.scalar(
+        select(ConnectionRequest).where(ConnectionRequest.id == request_id)
+    )
+
+
 async def set_connection_request_status(
     session: AsyncSession,
     *,
@@ -290,10 +250,9 @@ async def set_connection_request_status(
     if not req:
         return None
 
-    from datetime import datetime as _dt
-
     req.status = status
-    req.responded_at = _dt.utcnow()
+    req.responded_at = datetime.utcnow()
+
     await session.commit()
     await session.refresh(req)
     return req

@@ -2,7 +2,7 @@
 from typing import Sequence
 
 from models import Profile
-from constants import STACK_LABELS, ROLE_OPTIONS, GOAL_OPTIONS
+from constants import STACK_LABELS, ROLE_OPTIONS, GOAL_OPTIONS, format_stack_value
 from views.safe import html_safe
 
 
@@ -22,8 +22,7 @@ def format_profile_text(
     username = html_safe(profile.username or fallback_username, default="без username")
 
     stack_raw = profile.stack
-    stack_label = html_safe(STACK_LABELS.get(stack_raw, stack_raw or "—"))
-
+    ц
     role_label = html_safe(ROLE_LABELS.get(profile.role, profile.role or "—"))
     goals_label = html_safe(GOAL_LABELS.get(profile.goals, profile.goals or "—"))
 
@@ -47,7 +46,7 @@ def format_profile_public(profile: Profile) -> str:
     - заявках на общение.
     """
     stack_raw = profile.stack
-    stack_label = html_safe(STACK_LABELS.get(stack_raw, stack_raw or "—"))
+    stack_label = html_safe(format_stack_value(stack_raw))
 
     role_label = html_safe(ROLE_LABELS.get(profile.role, profile.role or "—"))
     goals_label = html_safe(GOAL_LABELS.get(profile.goals, profile.goals or "—"))
@@ -78,7 +77,7 @@ def format_profiles_list_text(
 
     for p in profiles:
         stack_raw = p.stack
-        stack_label = html_safe(STACK_LABELS.get(stack_raw, stack_raw or "—"))
+        stack_label = html_safe(format_stack_value(stack_raw))
 
         role_label = html_safe(ROLE_LABELS.get(p.role, p.role or "—"))
         goals_label = html_safe(GOAL_LABELS.get(p.goals, p.goals or "—"))

@@ -1,14 +1,13 @@
 # services/connections.py
 import logging
-from datetime import datetime
 
-from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models import ConnectionRequest
 from repositories import (
-    get_pending_request_between,
+    get_pending_connect_request_between,
+    get_pending_project_request_between,
     create_connection_request,
     get_connection_request_by_id,
     set_connection_request_status,
@@ -17,29 +16,27 @@ from repositories import (
 
 logger = logging.getLogger(__name__)
 
-# Лимит заявок в день на одного пользователя
-MAX_CONNECTION_REQUESTS_PER_DAY = settings.max_connection_requests_per_day
 
-
-async def send_connection_request(
+async def send_connect_request(
     session: AsyncSession,
     *,
     from_id: int,
     to_id: int,
 ) -> tuple[ConnectionRequest | None, str]:
     """
+    Обычная заявка на коннект (НЕ проектная).
+
     Возвращаем (request, reason)
     reason:
       - "ok" — новая заявка
       - "self" — попытка отправить себе
-      - "exists" — уже есть pending
+      - "exists" — уже есть pending (только connect, project_id IS NULL)
       - "limit" — достигнут дневной лимит
     """
     if from_id == to_id:
         return None, "self"
 
-    # Если заявка уже есть — это не “новая попытка”, лимит не тратим
-    existing = await get_pending_request_between(
+    existing = await get_pending_connect_request_between(
         session,
         from_id=from_id,
         to_id=to_id,
@@ -47,25 +44,73 @@ async def send_connection_request(
     if existing:
         return existing, "exists"
 
-    # ===== лимит на день =====
-    start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-
-    q = select(func.count(ConnectionRequest.id)).where(
-        ConnectionRequest.from_telegram_id == from_id,
-        ConnectionRequest.created_at >= start_of_day,
+    sent_today = await count_connection_requests_from_user_today(
+        session, from_id=from_id
     )
-    sent_today = (await session.execute(q)).scalar_one() or 0
-
     if sent_today >= settings.max_connection_requests_per_day:
         return None, "limit"
-    # =========================
 
     req = await create_connection_request(
         session,
         from_id=from_id,
         to_id=to_id,
+        project_id=None,
     )
     return req, "ok"
+
+
+async def send_project_request(
+    session: AsyncSession,
+    *,
+    from_id: int,
+    to_id: int,
+    project_id: int,
+) -> tuple[ConnectionRequest | None, str]:
+    """
+    Проектная заявка (строго с project_id).
+
+    Возвращаем (request, reason)
+    reason:
+      - "ok" — новая заявка
+      - "self" — попытка отправить себе
+      - "exists" — уже есть pending по этому же project_id
+      - "limit" — достигнут дневной лимит
+    """
+    if from_id == to_id:
+        return None, "self"
+
+    existing = await get_pending_project_request_between(
+        session,
+        from_id=from_id,
+        to_id=to_id,
+        project_id=project_id,
+    )
+    if existing:
+        return existing, "exists"
+
+    sent_today = await count_connection_requests_from_user_today(
+        session, from_id=from_id
+    )
+    if sent_today >= settings.max_connection_requests_per_day:
+        return None, "limit"
+
+    req = await create_connection_request(
+        session,
+        from_id=from_id,
+        to_id=to_id,
+        project_id=project_id,
+    )
+    return req, "ok"
+
+
+# Backward-compat: старое имя (если где-то осталось).
+async def send_connection_request(
+    session: AsyncSession,
+    *,
+    from_id: int,
+    to_id: int,
+) -> tuple[ConnectionRequest | None, str]:
+    return await send_connect_request(session, from_id=from_id, to_id=to_id)
 
 
 async def reject_connection_request(
