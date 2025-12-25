@@ -1,4 +1,5 @@
 # services/profiles.py
+import logging
 from typing import Sequence
 
 from aiogram.types import User
@@ -12,6 +13,8 @@ from repositories import (
     update_profile as repo_update_profile,
     search_profiles,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def ensure_profile(
@@ -27,6 +30,12 @@ async def ensure_profile(
         telegram_id=tg_user.id,
         username=tg_user.username,
     )
+    logger.info(
+        "profile_ensured telegram_id=%s username=%s profile_id=%s",
+        tg_user.id,
+        tg_user.username,
+        getattr(profile, "id", None),
+    )
     return profile
 
 
@@ -34,7 +43,13 @@ async def get_profile(
     session: AsyncSession,
     telegram_id: int,
 ) -> Profile | None:
-    return await get_profile_by_telegram_id(session, telegram_id)
+    profile = await get_profile_by_telegram_id(session, telegram_id)
+    logger.info(
+        "profile_fetched telegram_id=%s found=%s",
+        telegram_id,
+        bool(profile),
+    )
+    return profile
 
 
 async def update_profile_data(
@@ -66,6 +81,20 @@ async def update_profile_data(
     if telegram_id is None:
         raise ValueError("Нужно передать либо profile, либо telegram_id")
 
+    fields_to_update = {
+        "first_name": first_name,
+        "avatar_file_id": avatar_file_id,
+        "role": role,
+        "stack": stack,
+        "framework": framework,
+        "skills": skills,
+        "goals": goals,
+        "about": about,
+    }
+    changed_fields = [
+        name for name, value in fields_to_update.items() if value is not None
+    ]
+
     updated_profile = await repo_update_profile(
         session,
         telegram_id=telegram_id,
@@ -78,6 +107,14 @@ async def update_profile_data(
         goals=goals,
         about=about,
     )
+
+    logger.info(
+        "profile_updated telegram_id=%s updated_fields=%s success=%s",
+        telegram_id,
+        ",".join(changed_fields) if changed_fields else "-",
+        bool(updated_profile),
+    )
+
     return updated_profile
 
 
@@ -114,7 +151,15 @@ async def _get_requested_ids_for_user(
     )
     result = await session.execute(stmt)
     rows = result.fetchall()
-    return {row[0] for row in rows}
+    ids = {row[0] for row in rows}
+
+    logger.info(
+        "profiles_requested_ids_loaded requester_id=%s count=%s",
+        requester_id,
+        len(ids),
+    )
+
+    return ids
 
 
 # ===== поиск профилей для ленты =====
@@ -160,5 +205,17 @@ async def search_profiles_for_user(
         profiles.append(p)
         if len(profiles) >= limit:
             break
+
+    logger.info(
+        "profiles_search requester_id=%s goal=%s role=%s limit=%s "
+        "raw_count=%s result_count=%s skipped_requested=%s",
+        requester_id,
+        goal,
+        role,
+        limit,
+        len(raw_profiles),
+        len(profiles),
+        len(requested_ids),
+    )
 
     return profiles

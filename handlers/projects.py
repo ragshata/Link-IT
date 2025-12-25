@@ -1,5 +1,5 @@
 # handlers/projects.py
-
+import logging
 from types import SimpleNamespace
 
 from aiogram import Router, F, Bot
@@ -16,7 +16,7 @@ from constants import (
     PROJECT_STATUS_OPTIONS,
     PROJECT_STATUS_LABELS,
 )
-from views import format_project_card, format_profile_public
+from views import format_project_card, format_profile_public, html_safe
 from services import (
     create_user_project,
     get_projects_feed,
@@ -26,6 +26,7 @@ from services import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 # Вспомогательные мапы код -> лейбл
 STACK_CODE_TO_LABEL: dict[str, str] = {}
@@ -112,6 +113,14 @@ async def _show_project_preview(message: Message, state: FSMContext):
     data = await state.get_data()
     preview_project = _build_preview_project_from_state(data)
 
+    logger.info(
+        "project_preview_shown user_id=%s title_len=%s has_image=%s status=%s",
+        message.from_user.id if message.from_user else None,
+        len(preview_project.title or "") if preview_project.title else 0,
+        bool(getattr(preview_project, "image_file_id", None)),
+        getattr(preview_project, "status", None),
+    )
+
     text = (
         "Проверь проект перед публикацией 👇\n\n"
         f"{format_project_card(preview_project)}"
@@ -149,6 +158,14 @@ async def _send_project_card(
     - кнопки: отклик, предыдущий/следующий.
     """
     text = format_project_card(project)
+
+    logger.info(
+        "project_card_sent user_id=%s project_id=%s owner_id=%s has_image=%s",
+        source_message.from_user.id if source_message.from_user else None,
+        getattr(project, "id", None),
+        getattr(project, "owner_telegram_id", None),
+        bool(getattr(project, "image_file_id", None)),
+    )
 
     kb = InlineKeyboardBuilder()
     kb.button(
@@ -194,18 +211,38 @@ async def _get_projfeed_project_at_index(
     ids: list[int] | None = data.get("projfeed_ids")
 
     if not ids:
+        logger.info(
+            "projfeed_empty_ids requester_id=%s",
+            requester_id,
+        )
         return None, None
 
     if new_index < 0 or new_index >= len(ids):
+        logger.info(
+            "projfeed_index_out_of_range requester_id=%s new_index=%s total=%s",
+            requester_id,
+            new_index,
+            len(ids),
+        )
         return None, None
 
     project_id = ids[new_index]
     project = await get_project(session, project_id)
     if not project:
+        logger.info(
+            "projfeed_project_not_found requester_id=%s project_id=%s",
+            requester_id,
+            project_id,
+        )
         return None, None
 
     # не показываем свои проекты
     if project.owner_telegram_id == requester_id:
+        logger.info(
+            "projfeed_skip_own_project requester_id=%s project_id=%s",
+            requester_id,
+            project_id,
+        )
         if new_index + 1 < len(ids):
             return await _get_projfeed_project_at_index(
                 state=state,
@@ -216,6 +253,14 @@ async def _get_projfeed_project_at_index(
         return None, None
 
     await state.update_data(projfeed_index=new_index)
+
+    logger.info(
+        "projfeed_project_selected requester_id=%s project_id=%s index=%s",
+        requester_id,
+        project_id,
+        new_index,
+    )
+
     return project, new_index
 
 
@@ -225,6 +270,11 @@ async def _get_projfeed_project_at_index(
 async def start_project_registration(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(ProjectStates.photo)
+
+    logger.info(
+        "project_registration_started user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
 
     kb = InlineKeyboardBuilder()
     kb.button(text="Пропустить фото", callback_data="project_skip_photo")
@@ -245,21 +295,37 @@ async def start_project_registration(message: Message, state: FSMContext):
 async def project_photo_message(message: Message, state: FSMContext):
     file_id = message.photo[-1].file_id
     await state.update_data(image_file_id=file_id)
+
+    logger.info(
+        "project_photo_set user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
+
     await _ask_title(message, state)
 
 
 @router.callback_query(ProjectStates.photo, F.data == "project_skip_photo")
 async def project_photo_skip(callback: CallbackQuery, state: FSMContext):
+    logger.info(
+        "project_photo_skipped user_id=%s",
+        callback.from_user.id,
+    )
     await _ask_title(callback.message, state)
     await callback.answer()
 
 
 async def _ask_title(message: Message, state: FSMContext):
     await state.set_state(ProjectStates.title)
+
+    logger.info(
+        "project_step_title user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
+
     await message.answer(
         "Шаг 2 из 8.\n"
         "Напиши короткое название проекта.\n"
-        "Например: «Платформа для IT-нетворкинга»."
+        "Например: «Платформа для IT-нетворкинга».",
     )
 
 
@@ -268,8 +334,16 @@ async def _ask_title(message: Message, state: FSMContext):
 
 @router.message(ProjectStates.title, F.text)
 async def project_title(message: Message, state: FSMContext):
-    await state.update_data(title=message.text.strip())
+    title = message.text.strip()
+    await state.update_data(title=title)
     await state.update_data(stack_selected=[], stack_custom=None)
+
+    logger.info(
+        "project_title_set user_id=%s title_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(title),
+    )
+
     await _ask_stack(message, state)
 
 
@@ -292,6 +366,12 @@ async def _ask_stack(message: Message, state: FSMContext):
     await state.set_state(ProjectStates.stack)
     data = await state.get_data()
     selected = data.get("stack_selected", []) or []
+
+    logger.info(
+        "project_step_stack user_id=%s selected_count=%s",
+        message.from_user.id if message.from_user else None,
+        len(selected),
+    )
 
     kb = _build_stack_keyboard(selected)
 
@@ -321,12 +401,26 @@ async def project_stack_callback(callback: CallbackQuery, state: FSMContext):
         final_stack = "; ".join(parts) if parts else None
         await state.update_data(stack=final_stack)
 
+        logger.info(
+            "project_stack_done user_id=%s selected_count=%s has_custom=%s",
+            callback.from_user.id,
+            len(selected),
+            bool(custom),
+        )
+
         await _ask_idea(callback.message, state)
         await callback.answer()
         return
 
     if code == "other":
         await state.set_state(ProjectStates.stack_custom)
+
+        logger.info(
+            "project_stack_other_start user_id=%s selected_count=%s",
+            callback.from_user.id,
+            len(selected),
+        )
+
         await callback.message.edit_text(
             "Напиши стек проекта текстом.\n"
             "Например: Python + React, Go + Vue, Node.js + React.",
@@ -354,16 +448,30 @@ async def project_stack_callback(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ProjectStates.stack_custom, F.text)
 async def project_stack_custom(message: Message, state: FSMContext):
-    await state.update_data(stack_custom=message.text.strip())
+    text = message.text.strip()
+    await state.update_data(stack_custom=text)
+
+    logger.info(
+        "project_stack_custom_entered user_id=%s text_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(text),
+    )
+
     await _ask_stack(message, state)
 
 
 async def _ask_idea(message: Message, state: FSMContext):
     await state.set_state(ProjectStates.idea)
+
+    logger.info(
+        "project_step_idea user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
+
     await message.answer(
         "Шаг 4 из 8.\n"
         "Опиши идею проекта и текущее состояние.\n"
-        "Например: что уже сделано, какие технологии, чего хочешь достичь."
+        "Например: что уже сделано, какие технологии, чего хочешь достичь.",
     )
 
 
@@ -372,7 +480,15 @@ async def _ask_idea(message: Message, state: FSMContext):
 
 @router.message(ProjectStates.idea, F.text)
 async def project_idea(message: Message, state: FSMContext):
-    await state.update_data(idea=message.text.strip())
+    idea = message.text.strip()
+    await state.update_data(idea=idea)
+
+    logger.info(
+        "project_idea_set user_id=%s idea_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(idea),
+    )
+
     await _ask_status(message, state)
 
 
@@ -387,8 +503,13 @@ async def _ask_status(message: Message, state: FSMContext):
         kb.button(text=label, callback_data=f"project_status:{code}")
     kb.adjust(2)
 
+    logger.info(
+        "project_step_status user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
+
     await message.answer(
-        "Шаг 5 из 8.\n" "На какой стадии сейчас проект?\n" "Выбери статус:",
+        "Шаг 5 из 8.\nНа какой стадии сейчас проект?\nВыбери статус:",
         reply_markup=kb.as_markup(),
     )
 
@@ -403,6 +524,13 @@ async def project_status_callback(
     await state.update_data(status=code)
 
     status_label = PROJECT_STATUS_LABELS.get(code, code)
+
+    logger.info(
+        "project_status_set user_id=%s status=%s",
+        callback.from_user.id,
+        status_label,
+    )
+
     await callback.answer(f"Статус: {status_label}", show_alert=False)
 
     await _ask_needs_now(callback.message, state)
@@ -413,6 +541,12 @@ async def project_status_callback(
 
 async def _ask_needs_now(message: Message, state: FSMContext):
     await state.set_state(ProjectStates.needs_now)
+
+    logger.info(
+        "project_step_needs_now user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
+
     await message.answer(
         "Шаг 6 из 8.\n"
         "Расскажи, что <b>сейчас нужно</b> проекту:\n"
@@ -426,8 +560,16 @@ async def _ask_needs_now(message: Message, state: FSMContext):
 
 @router.message(ProjectStates.needs_now, F.text)
 async def project_needs_now(message: Message, state: FSMContext):
-    await state.update_data(needs_now=message.text.strip())
+    text = message.text.strip()
+    await state.update_data(needs_now=text)
     await state.update_data(looking_selected=[])
+
+    logger.info(
+        "project_needs_now_set user_id=%s text_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(text),
+    )
+
     await _ask_looking_for(message, state)
 
 
@@ -450,6 +592,12 @@ async def _ask_looking_for(message: Message, state: FSMContext):
     data = await state.get_data()
     selected = data.get("looking_selected", []) or []
 
+    logger.info(
+        "project_step_looking_for user_id=%s selected_count=%s",
+        message.from_user.id if message.from_user else None,
+        len(selected),
+    )
+
     kb = _build_looking_keyboard(selected)
 
     await message.answer(
@@ -471,6 +619,12 @@ async def project_looking_for_callback(
 
     if code == "skip":
         await state.update_data(looking_for_role=None)
+
+        logger.info(
+            "project_looking_for_skipped user_id=%s",
+            callback.from_user.id,
+        )
+
         await _ask_level(callback.message, state)
         await callback.answer()
         return
@@ -479,6 +633,13 @@ async def project_looking_for_callback(
         labels = [ROLE_CODE_TO_LABEL.get(c, c) for c in selected]
         final_roles = ", ".join(labels) if labels else None
         await state.update_data(looking_for_role=final_roles)
+
+        logger.info(
+            "project_looking_for_done user_id=%s selected_count=%s",
+            callback.from_user.id,
+            len(selected),
+        )
+
         await _ask_level(callback.message, state)
         await callback.answer()
         return
@@ -514,8 +675,13 @@ async def _ask_level(message: Message, state: FSMContext):
     kb.button(text="Любой уровень", callback_data="project_level:any")
     kb.adjust(2)
 
+    logger.info(
+        "project_step_level user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
+
     await message.edit_text(
-        "Шаг 8 из 8.\n" "Какой уровень тебя больше всего интересует в этом проекте?",
+        "Шаг 8 из 8.\nКакой уровень тебя больше всего интересует в этом проекте?",
         reply_markup=kb.as_markup(),
     )
 
@@ -534,6 +700,12 @@ async def project_level_callback(
     }
     level_label = mapping.get(code, code)
     await state.update_data(level=level_label)
+
+    logger.info(
+        "project_level_set user_id=%s level=%s",
+        callback.from_user.id,
+        level_label,
+    )
 
     await state.set_state(ProjectStates.extra)
 
@@ -558,6 +730,13 @@ async def project_extra(
         extra = None
 
     await state.update_data(extra=extra)
+
+    logger.info(
+        "project_extra_set user_id=%s extra_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(extra or ""),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -569,22 +748,22 @@ async def project_confirm_cancel(
     callback: CallbackQuery,
     state: FSMContext,
 ):
-    """
-    Отмена публикации проекта на этапе предпросмотра:
-    - чистим состояние,
-    - удаляем сообщение с предпросмотром,
-    - пишем короткое уведомление пользователю.
-    """
+    logger.info(
+        "project_publish_cancelled user_id=%s",
+        callback.from_user.id,
+    )
+
     await state.clear()
 
-    # Пытаемся удалить превью проекта
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "project_preview_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
-    # Сообщаем пользователю, что всё отменено
-    # Реплай-клава с меню у тебя остаётся та же, что была.
     await callback.message.answer(
         "Создание проекта отменено.\n\n"
         "Если захочешь — нажми «🆕 Новый проект» и начни заново."
@@ -612,6 +791,15 @@ async def project_confirm_publish(
     level = data.get("level")
     extra = data.get("extra")
 
+    logger.info(
+        "project_publish_attempt user_id=%s title_len=%s stack_len=%s idea_len=%s status=%s",
+        callback.from_user.id,
+        len(title or "") if title else 0,
+        len(stack or "") if stack else 0,
+        len(idea or "") if idea else 0,
+        status,
+    )
+
     project = await create_user_project(
         session,
         owner_telegram_id=callback.from_user.id,
@@ -624,6 +812,13 @@ async def project_confirm_publish(
         image_file_id=image_file_id,
         status=status,
         needs_now=needs_now,
+    )
+
+    logger.info(
+        "project_published user_id=%s project_id=%s status=%s",
+        callback.from_user.id,
+        getattr(project, "id", None),
+        getattr(project, "status", None),
     )
 
     await callback.answer("Проект опубликован ✅", show_alert=False)
@@ -645,12 +840,18 @@ async def proj_edit_title_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("title") or "—"
+    cur = html_safe(data.get("title"), default="—")
+
+    logger.info(
+        "project_edit_title_start user_id=%s current_len=%s",
+        callback.from_user.id,
+        len(cur),
+    )
 
     await state.set_state(ProjectStates.edit_title)
     await callback.answer()
     await callback.message.answer(
-        f"Текущее название:\n<b>{cur}</b>\n\n" "Напиши новое название проекта:",
+        f"Текущее название:\n<b>{cur}</b>\n\nНапиши новое название проекта:",
     )
 
 
@@ -659,7 +860,15 @@ async def proj_edit_title_message(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(title=message.text.strip())
+    title = message.text.strip()
+    await state.update_data(title=title)
+
+    logger.info(
+        "project_edit_title_set user_id=%s title_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(title),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -672,7 +881,13 @@ async def proj_edit_idea_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("idea") or "—"
+    cur = html_safe(data.get("idea"), default="—")
+
+    logger.info(
+        "project_edit_idea_start user_id=%s current_len=%s",
+        callback.from_user.id,
+        len(cur),
+    )
 
     await state.set_state(ProjectStates.edit_idea)
     await callback.answer()
@@ -686,7 +901,15 @@ async def proj_edit_idea_message(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(idea=message.text.strip())
+    idea = message.text.strip()
+    await state.update_data(idea=idea)
+
+    logger.info(
+        "project_edit_idea_set user_id=%s idea_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(idea),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -699,7 +922,13 @@ async def proj_edit_needs_now_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("needs_now") or "—"
+    cur = html_safe(data.get("needs_now"), default="—")
+
+    logger.info(
+        "project_edit_needs_now_start user_id=%s current_len=%s",
+        callback.from_user.id,
+        len(cur),
+    )
 
     await state.set_state(ProjectStates.edit_needs_now)
     await callback.answer()
@@ -715,7 +944,15 @@ async def proj_edit_needs_now_message(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(needs_now=message.text.strip())
+    text = message.text.strip()
+    await state.update_data(needs_now=text)
+
+    logger.info(
+        "project_edit_needs_now_set user_id=%s text_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(text),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -728,7 +965,13 @@ async def proj_edit_extra_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("extra") or "—"
+    cur = html_safe(data.get("extra"), default="—")
+
+    logger.info(
+        "project_edit_extra_start user_id=%s current_len=%s",
+        callback.from_user.id,
+        len(cur),
+    )
 
     await state.set_state(ProjectStates.edit_extra)
     await callback.answer()
@@ -749,6 +992,13 @@ async def proj_edit_extra_message(
     if extra == "-":
         extra = None
     await state.update_data(extra=extra)
+
+    logger.info(
+        "project_edit_extra_set user_id=%s extra_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(extra or ""),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -762,7 +1012,13 @@ async def proj_edit_status_callback(
 ):
     data = await state.get_data()
     cur_code = data.get("status", "idea")
-    cur_label = PROJECT_STATUS_LABELS.get(cur_code, cur_code)
+    cur_label = html_safe(PROJECT_STATUS_LABELS.get(cur_code, cur_code))
+
+    logger.info(
+        "project_edit_status_start user_id=%s current_status=%s",
+        callback.from_user.id,
+        cur_label,
+    )
 
     await state.set_state(ProjectStates.edit_status)
     await callback.answer()
@@ -773,7 +1029,7 @@ async def proj_edit_status_callback(
     kb.adjust(2)
 
     await callback.message.answer(
-        f"Текущий статус проекта: <b>{cur_label}</b>\n\n" "Выбери новый статус:",
+        f"Текущий статус проекта: <b>{cur_label}</b>\n\nВыбери новый статус:",
         reply_markup=kb.as_markup(),
     )
 
@@ -787,6 +1043,13 @@ async def proj_edit_status_choice(
 ):
     _, code = callback.data.split(":", 1)
     await state.update_data(status=code)
+
+    logger.info(
+        "project_edit_status_set user_id=%s status=%s",
+        callback.from_user.id,
+        PROJECT_STATUS_LABELS.get(code, code),
+    )
+
     await callback.answer()
     await _show_project_preview(callback.message, state)
 
@@ -800,7 +1063,13 @@ async def proj_edit_stack_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("stack") or "—"
+    cur = html_safe(data.get("stack"), default="—")
+
+    logger.info(
+        "project_edit_stack_start user_id=%s current_len=%s",
+        callback.from_user.id,
+        len(cur),
+    )
 
     await state.update_data(edit_stack_selected=[], edit_stack_custom=None)
     await state.set_state(ProjectStates.edit_stack)
@@ -838,12 +1107,27 @@ async def proj_edit_stack_choice(
             edit_stack_selected=[],
             edit_stack_custom=None,
         )
+
+        logger.info(
+            "project_edit_stack_done user_id=%s selected_count=%s has_custom=%s",
+            callback.from_user.id,
+            len(selected),
+            bool(custom),
+        )
+
         await callback.answer()
         await _show_project_preview(callback.message, state)
         return
 
     if code == "other":
         await state.set_state(ProjectStates.edit_stack_custom)
+
+        logger.info(
+            "project_edit_stack_other_start user_id=%s selected_count=%s",
+            callback.from_user.id,
+            len(selected),
+        )
+
         await callback.message.edit_text(
             "Напиши стек проекта текстом.\n"
             "Например: Python + React, Go + Vue, Node.js + React.",
@@ -873,8 +1157,15 @@ async def proj_edit_stack_custom_message(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(edit_stack_custom=message.text.strip())
-    # вернёмся к выбору стека (редактирование)
+    text = message.text.strip()
+    await state.update_data(edit_stack_custom=text)
+
+    logger.info(
+        "project_edit_stack_custom_entered user_id=%s text_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(text),
+    )
+
     await state.set_state(ProjectStates.edit_stack)
     kb = _build_stack_keyboard(
         (await state.get_data()).get("edit_stack_selected", []) or []
@@ -896,7 +1187,13 @@ async def proj_edit_roles_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("looking_for_role") or "—"
+    cur = html_safe(data.get("looking_for_role"), default="—")
+
+    logger.info(
+        "project_edit_roles_start user_id=%s current_len=%s",
+        callback.from_user.id,
+        len(cur),
+    )
 
     await state.update_data(edit_looking_selected=[])
     await state.set_state(ProjectStates.edit_looking_for)
@@ -928,6 +1225,12 @@ async def proj_edit_roles_choice(
             looking_for_role=None,
             edit_looking_selected=[],
         )
+
+        logger.info(
+            "project_edit_roles_skipped user_id=%s",
+            callback.from_user.id,
+        )
+
         await callback.answer()
         await _show_project_preview(callback.message, state)
         return
@@ -939,6 +1242,13 @@ async def proj_edit_roles_choice(
             looking_for_role=final_roles,
             edit_looking_selected=[],
         )
+
+        logger.info(
+            "project_edit_roles_done user_id=%s selected_count=%s",
+            callback.from_user.id,
+            len(selected),
+        )
+
         await callback.answer()
         await _show_project_preview(callback.message, state)
         return
@@ -969,7 +1279,13 @@ async def proj_edit_level_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("level") or "—"
+    cur = html_safe(data.get("level"), default="—")
+
+    logger.info(
+        "project_edit_level_start user_id=%s current_level=%s",
+        callback.from_user.id,
+        cur,
+    )
 
     await state.set_state(ProjectStates.edit_level)
     await callback.answer()
@@ -1005,6 +1321,12 @@ async def proj_edit_level_choice(
     level_label = mapping.get(code, code)
     await state.update_data(level=level_label)
 
+    logger.info(
+        "project_edit_level_set user_id=%s level=%s",
+        callback.from_user.id,
+        level_label,
+    )
+
     await callback.answer()
     await _show_project_preview(callback.message, state)
 
@@ -1019,20 +1341,35 @@ async def projects_feed_handler(
     session: AsyncSession,
     bot: Bot,
 ):
+    logger.info(
+        "projects_feed_opened user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
+
     projects = await get_projects_feed(session, limit=50)
 
     projects = [p for p in projects if p.owner_telegram_id != message.from_user.id]
 
     if not projects:
+        logger.info(
+            "projects_feed_empty user_id=%s",
+            message.from_user.id if message.from_user else None,
+        )
         await message.answer(
             "Пока нет проектов в ленте.\n"
-            "Будь первым — создай свой через «🆕 Новый проект»."
+            "Будь первым — создай свой через «🆕 Новый проект».",
         )
         return
 
     await state.update_data(
         projfeed_ids=[p.id for p in projects],
         projfeed_index=0,
+    )
+
+    logger.info(
+        "projects_feed_loaded user_id=%s count=%s",
+        message.from_user.id if message.from_user else None,
+        len(projects),
     )
 
     await _send_project_card(
@@ -1055,6 +1392,14 @@ async def proj_next_callback(
         index = 0
 
     new_index = index + 1
+
+    logger.info(
+        "projects_feed_next user_id=%s current_index=%s new_index=%s",
+        callback.from_user.id,
+        index,
+        new_index,
+    )
+
     project, _ = await _get_projfeed_project_at_index(
         state=state,
         session=session,
@@ -1063,9 +1408,13 @@ async def proj_next_callback(
     )
 
     if not project:
+        logger.info(
+            "projects_feed_reached_end user_id=%s",
+            callback.from_user.id,
+        )
         await callback.answer("Это был последний проект", show_alert=False)
         await callback.message.answer(
-            "Ты посмотрел все проекты в ленте.\n" "Загляни позже — появятся новые."
+            "Ты посмотрел все проекты в ленте.\nЗагляни позже — появятся новые."
         )
         return
 
@@ -1079,7 +1428,11 @@ async def proj_next_callback(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "projects_feed_prev_message_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
 
 @router.callback_query(F.data == "proj_prev")
@@ -1095,6 +1448,14 @@ async def proj_prev_callback(
         index = 0
 
     new_index = index - 1
+
+    logger.info(
+        "projects_feed_prev user_id=%s current_index=%s new_index=%s",
+        callback.from_user.id,
+        index,
+        new_index,
+    )
+
     if new_index < 0:
         await callback.answer("Это первый проект", show_alert=False)
         return
@@ -1120,7 +1481,11 @@ async def proj_prev_callback(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "projects_feed_prev_message_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
 
 @router.callback_query(F.data.startswith("proj_apply:"))
@@ -1129,26 +1494,37 @@ async def proj_apply_callback(
     session: AsyncSession,
     bot: Bot,
 ):
-    """
-    Отклик на проект:
-    - создаём ConnectionRequest между откликнувшимся и владельцем проекта,
-    - владельцу уходит уведомление с фоткой и описанием откликнувшегося,
-      контакты скрыты до принятия.
-    """
     _, raw_id = callback.data.split(":", 1)
     try:
         project_id = int(raw_id)
     except ValueError:
+        logger.warning(
+            "project_apply_invalid_project_id user_id=%s raw_id=%s",
+            callback.from_user.id,
+            raw_id,
+        )
         await callback.answer("Что-то пошло не так", show_alert=True)
         return
 
     project = await get_project(session, project_id)
     if not project:
+        logger.info(
+            "project_apply_project_not_found user_id=%s project_id=%s",
+            callback.from_user.id,
+            project_id,
+        )
         await callback.answer("Проект не найден", show_alert=True)
         return
 
     from_id = callback.from_user.id
     to_id = project.owner_telegram_id
+
+    logger.info(
+        "project_apply_attempt user_id=%s project_id=%s owner_id=%s",
+        from_id,
+        project_id,
+        to_id,
+    )
 
     req, reason = await send_connection_request(
         session,
@@ -1157,13 +1533,36 @@ async def proj_apply_callback(
     )
 
     if reason == "self":
+        logger.info(
+            "project_apply_self user_id=%s project_id=%s",
+            from_id,
+            project_id,
+        )
         await callback.answer("Это твой проект 😄", show_alert=True)
         return
 
     if reason == "exists":
+        logger.info(
+            "project_apply_exists user_id=%s project_id=%s request_id=%s",
+            from_id,
+            project_id,
+            getattr(req, "id", None),
+        )
         await callback.answer(
             "Ты уже откликался на этот проект. Ждём ответа.",
             show_alert=False,
+        )
+        return
+
+    if reason == "limit":
+        logger.info(
+            "project_apply_limit_reached user_id=%s project_id=%s",
+            from_id,
+            project_id,
+        )
+        await callback.answer(
+            "Ты уже отправил максимум заявок на сегодня. Попробуй завтра 🙂",
+            show_alert=True,
         )
         return
 
@@ -1206,8 +1605,23 @@ async def proj_apply_callback(
                 text=notify_text,
                 reply_markup=kb.as_markup(),
             )
+
+        logger.info(
+            "project_apply_notification_sent user_id=%s owner_id=%s project_id=%s request_id=%s",
+            from_id,
+            to_id,
+            project_id,
+            getattr(req, "id", None),
+        )
     except Exception:
-        pass
+        logger.debug(
+            "project_apply_notification_failed user_id=%s owner_id=%s project_id=%s request_id=%s",
+            from_id,
+            to_id,
+            project_id,
+            getattr(req, "id", None),
+            exc_info=True,
+        )
 
     await callback.message.answer(
         "Заявка на участие в проекте отправлена.\n\n"

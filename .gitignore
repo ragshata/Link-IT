@@ -13,6 +13,11 @@ __pycache__/
 __pycache__/
 *.py[codz]
 *$py.class
+.env
+*.log
+linkit.db
+__pycache__/
+*.pyc
 
 # C extensions
 *.so

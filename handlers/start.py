@@ -1,5 +1,7 @@
 # handlers/start.py
 
+import logging
+
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -15,6 +17,7 @@ from .profile import (
 from .projects import start_project_registration  # запуск мастера проекта
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def build_main_menu_keyboard() -> ReplyKeyboardBuilder:
@@ -36,6 +39,16 @@ async def cmd_start(
     state: FSMContext,
     session: AsyncSession,
 ):
+    user = message.from_user
+    user_id = user.id if user else None
+    username = user.username if user else None
+
+    logger.info(
+        "cmd_start_called user_id=%s username=%s",
+        user_id,
+        username,
+    )
+
     profile = await get_profile(session, message.from_user.id)
     is_registered = profile is not None and profile.role is not None
 
@@ -47,15 +60,37 @@ async def cmd_start(
             "Привет! Ты уже в Link IT.",
             reply_markup=kb.as_markup(resize_keyboard=True),
         )
+
+        logger.info(
+            "cmd_start_existing_profile user_id=%s profile_id=%s role=%s",
+            message.from_user.id,
+            getattr(profile, "id", None),
+            getattr(profile, "role", None),
+        )
         return
 
     # Профиля ещё нет — создаём запись и запускаем ПЕРВИЧНУЮ регистрацию (без отмены)
-    await ensure_profile(session, message.from_user)
+    created_profile = await ensure_profile(session, message.from_user)
+    logger.info(
+        "cmd_start_new_profile_created user_id=%s profile_id=%s",
+        message.from_user.id,
+        getattr(created_profile, "id", None),
+    )
+
     await start_profile_registration(message, state)
+    logger.info(
+        "cmd_start_profile_registration_started user_id=%s",
+        message.from_user.id,
+    )
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
+    logger.info(
+        "cmd_help_called user_id=%s username=%s",
+        message.from_user.id if message.from_user else None,
+        message.from_user.username if message.from_user else None,
+    )
     await message.answer(
         "Основное:\n"
         "/start — главное меню или запуск регистрации, если профиля ещё нет\n"
@@ -74,6 +109,10 @@ async def on_menu_profile(
     session: AsyncSession,
     bot: Bot,
 ):
+    logger.info(
+        "menu_profile_clicked user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
     await cmd_profile(message, session, bot)
 
 
@@ -82,5 +121,9 @@ async def on_menu_new_project(
     message: Message,
     state: FSMContext,
 ):
+    logger.info(
+        "menu_new_project_clicked user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
     # просто запускаем мастер регистрации проекта
     await start_project_registration(message, state)

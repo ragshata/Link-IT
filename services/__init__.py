@@ -13,7 +13,6 @@ from .projects import (
 
 from .connections import (
     send_connection_request,
-    accept_connection_request,
     reject_connection_request,
     get_connection_request,
 )
@@ -27,7 +26,6 @@ __all__ = [
     "get_projects_feed",
     "get_project",
     "send_connection_request",
-    "accept_connection_request",
     "reject_connection_request",
     "get_connection_request",
 ]

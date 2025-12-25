@@ -1,10 +1,13 @@
 # services/projects.py
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from models import Project, ConnectionRequest
 from repositories import create_project, list_projects, get_project_by_id
+
+logger = logging.getLogger(__name__)
 
 
 async def create_user_project(
@@ -29,7 +32,7 @@ async def create_user_project(
     # Если статус не передали — ставим дефолтный
     final_status = status or "💡 Идея"
 
-    return await create_project(
+    project = await create_project(
         session,
         owner_telegram_id=owner_telegram_id,
         title=title,
@@ -44,6 +47,18 @@ async def create_user_project(
         team_limit=team_limit,
         chat_link=chat_link,
     )
+
+    logger.info(
+        "project_created owner_telegram_id=%s project_id=%s title=%r status=%r stack=%r level=%r",
+        owner_telegram_id,
+        getattr(project, "id", None),
+        title,
+        final_status,
+        stack,
+        level,
+    )
+
+    return project
 
 
 async def _get_blocked_project_ids_for_user(
@@ -64,8 +79,15 @@ async def _get_blocked_project_ids_for_user(
     )
     result = await session.execute(stmt)
     rows = result.scalars().all()
-    # project_id может быть None, отфильтруем
-    return {pid for pid in rows if pid is not None}
+    blocked_ids = {pid for pid in rows if pid is not None}
+
+    logger.info(
+        "projects_blocked_ids_loaded requester_id=%s count=%s",
+        requester_id,
+        len(blocked_ids),
+    )
+
+    return blocked_ids
 
 
 async def get_projects_feed(
@@ -94,13 +116,22 @@ async def get_projects_feed(
     """
     # Без requester_id — просто отдаем отфильтрованный список
     if requester_id is None:
-        return await list_projects(
+        projects = await list_projects(
             session,
             limit=limit,
             role=role,
             stack=stack,
             level=level,
         )
+        logger.info(
+            "projects_feed requester_id=None role=%s stack=%s level=%s limit=%s result_count=%s",
+            role,
+            stack,
+            level,
+            limit,
+            len(projects),
+        )
+        return projects
 
     blocked_project_ids = await _get_blocked_project_ids_for_user(session, requester_id)
 
@@ -114,18 +145,37 @@ async def get_projects_feed(
     )
 
     projects: list[Project] = []
+    skipped_own = 0
+    skipped_blocked = 0
+
     for p in base_projects:
         # свои проекты не показываем
         if p.owner_telegram_id == requester_id:
+            skipped_own += 1
             continue
 
         # проекты, на которые уже откликались / уже в команде
         if p.id in blocked_project_ids:
+            skipped_blocked += 1
             continue
 
         projects.append(p)
         if len(projects) >= limit:
             break
+
+    logger.info(
+        "projects_feed requester_id=%s role=%s stack=%s level=%s limit=%s "
+        "base_count=%s result_count=%s skipped_own=%s skipped_blocked=%s",
+        requester_id,
+        role,
+        stack,
+        level,
+        limit,
+        len(base_projects),
+        len(projects),
+        skipped_own,
+        skipped_blocked,
+    )
 
     return projects
 
@@ -134,4 +184,10 @@ async def get_project(
     session: AsyncSession,
     project_id: int,
 ) -> Project | None:
-    return await get_project_by_id(session, project_id)
+    project = await get_project_by_id(session, project_id)
+    logger.info(
+        "project_fetched project_id=%s found=%s",
+        project_id,
+        bool(project),
+    )
+    return project

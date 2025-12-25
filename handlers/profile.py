@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -17,6 +19,7 @@ from constants import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 PROFILE_CANCEL_CB = "profile_cancel_edit"
 
@@ -78,6 +81,13 @@ async def _start_profile_flow(
     allow_cancel: bool,
 ):
     """Общий старт регистрации/редактирования профиля."""
+    user_id = message.from_user.id if message.from_user else None
+    logger.info(
+        "profile_flow_started user_id=%s allow_cancel=%s",
+        user_id,
+        allow_cancel,
+    )
+
     await state.clear()
     await state.set_state(RegistrationStates.name)
     await state.update_data(is_edit=allow_cancel)
@@ -99,12 +109,21 @@ async def _start_profile_flow(
 
 # Это нужно вызывать при ПЕРВОЙ регистрации (например, из /start)
 async def start_profile_registration(message: Message, state: FSMContext):
+    logger.info(
+        "profile_registration_start user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
     await _start_profile_flow(message, state, allow_cancel=False)
 
 
 # Это /edit_profile и кнопка ✏️ Редактировать в профиле
 @router.message(Command("edit_profile"))
 async def cmd_edit_profile(message: Message, state: FSMContext):
+    logger.info(
+        "cmd_edit_profile_called user_id=%s username=%s",
+        message.from_user.id if message.from_user else None,
+        message.from_user.username if message.from_user else None,
+    )
     await _start_profile_flow(message, state, allow_cancel=True)
 
 
@@ -113,9 +132,23 @@ async def cmd_edit_profile(message: Message, state: FSMContext):
 
 @router.message(Command("profile"))
 async def cmd_profile(message: Message, session: AsyncSession, bot: Bot):
+    user = message.from_user
+    user_id = user.id if user else None
+    username = user.username if user else None
+
+    logger.info(
+        "cmd_profile_called user_id=%s username=%s",
+        user_id,
+        username,
+    )
+
     profile = await get_profile(session, message.from_user.id)
 
     if not profile:
+        logger.info(
+            "cmd_profile_no_profile user_id=%s",
+            message.from_user.id,
+        )
         await message.answer(
             "Профиль ещё не заполнен. Используй /edit_profile, чтобы пройти регистрацию."
         )
@@ -130,6 +163,14 @@ async def cmd_profile(message: Message, session: AsyncSession, bot: Bot):
     kb.button(text="🏆 Награды", callback_data="profile_rewards")
     kb.button(text="✏️ Редактировать", callback_data="profile_edit")
     kb.adjust(2)
+
+    logger.info(
+        "cmd_profile_show user_id=%s profile_id=%s has_avatar=%s role=%s",
+        message.from_user.id,
+        getattr(profile, "id", None),
+        bool(profile.avatar_file_id),
+        getattr(profile, "role", None),
+    )
 
     if profile.avatar_file_id:
         await bot.send_photo(
@@ -150,7 +191,15 @@ async def cmd_profile(message: Message, session: AsyncSession, bot: Bot):
 
 @router.message(RegistrationStates.name, F.text)
 async def process_name_text(message: Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
+    name = message.text.strip()
+    await state.update_data(name=name)
+
+    logger.info(
+        "profile_name_set user_id=%s name_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(name),
+    )
+
     await _ask_avatar(message, state)
 
 
@@ -161,6 +210,13 @@ async def process_name_from_tg(
 ):
     tg_name = callback.from_user.first_name or ""
     await state.update_data(name=tg_name)
+
+    logger.info(
+        "profile_name_from_tg user_id=%s name_len=%s",
+        callback.from_user.id,
+        len(tg_name),
+    )
+
     await _ask_avatar(callback.message, state)
     await callback.answer()
 
@@ -176,6 +232,12 @@ async def _ask_avatar(message: Message, state: FSMContext):
     if is_edit:
         kb.button(text="Отменить редактирование", callback_data=PROFILE_CANCEL_CB)
     kb.adjust(1)
+
+    logger.info(
+        "profile_step_avatar user_id=%s is_edit=%s",
+        message.from_user.id if message.from_user else None,
+        is_edit,
+    )
 
     await message.answer(
         "Шаг 2 из 7.\n"
@@ -195,6 +257,12 @@ async def process_avatar_photo(
 ):
     file_id = message.photo[-1].file_id
     await state.update_data(avatar_file_id=file_id)
+
+    logger.info(
+        "profile_avatar_set user_id=%s via=upload",
+        message.from_user.id if message.from_user else None,
+    )
+
     await _ask_role(message, state)
 
 
@@ -211,6 +279,15 @@ async def process_avatar_from_tg(
     if photos.total_count > 0 and photos.photos:
         file_id = photos.photos[0][-1].file_id
         await state.update_data(avatar_file_id=file_id)
+        logger.info(
+            "profile_avatar_set user_id=%s via=tg_profile",
+            callback.from_user.id,
+        )
+    else:
+        logger.info(
+            "profile_avatar_from_tg_empty user_id=%s",
+            callback.from_user.id,
+        )
 
     await _ask_role(callback.message, state)
     await callback.answer()
@@ -221,6 +298,10 @@ async def process_avatar_skip(
     callback: CallbackQuery,
     state: FSMContext,
 ):
+    logger.info(
+        "profile_avatar_skipped user_id=%s",
+        callback.from_user.id,
+    )
     await _ask_role(callback.message, state)
     await callback.answer()
 
@@ -236,6 +317,12 @@ async def _ask_role(message: Message, state: FSMContext):
     if is_edit:
         kb.button(text="Отменить редактирование", callback_data=PROFILE_CANCEL_CB)
     kb.adjust(2)
+
+    logger.info(
+        "profile_step_role user_id=%s is_edit=%s",
+        message.from_user.id if message.from_user else None,
+        is_edit,
+    )
 
     await message.answer(
         "Шаг 3 из 7.\nВыбери свою роль в IT:",
@@ -253,6 +340,12 @@ async def process_role(
 ):
     _, role_code = callback.data.split(":", 1)
     await state.update_data(role=role_code)
+
+    logger.info(
+        "profile_role_set user_id=%s role=%s",
+        callback.from_user.id,
+        role_code,
+    )
 
     await state.set_state(RegistrationStates.stack)
 
@@ -298,6 +391,14 @@ async def process_stack(
 
     data = await state.get_data()
     role = data.get("role")
+
+    logger.info(
+        "profile_stack_set user_id=%s role=%s stack=%s",
+        callback.from_user.id,
+        role,
+        stack_code,
+    )
+
     # fullstack: мультивыбор фреймворков
     if role == "fullstack":
         await state.update_data(
@@ -345,6 +446,14 @@ async def _ask_frameworks_fullstack(
 
     kb = _build_frameworks_keyboard_fullstack(stack_code, selected, is_edit)
 
+    logger.info(
+        "profile_step_frameworks_multi user_id=%s stack=%s selected_count=%s is_edit=%s",
+        message.from_user.id if message.from_user else None,
+        stack_code,
+        len(selected),
+        is_edit,
+    )
+
     await message.edit_text(
         "Шаг 5 из 7.\n"
         "Выбери один или несколько фреймворков, с которыми ты работаешь.\n"
@@ -380,6 +489,12 @@ async def process_framework_callback(
             kb.button(text="Отменить редактирование", callback_data=PROFILE_CANCEL_CB)
             markup = kb.as_markup()
 
+        logger.info(
+            "profile_framework_other_start user_id=%s stack=%s",
+            callback.from_user.id,
+            stack_code,
+        )
+
         await callback.message.edit_text(
             "Напиши свой фреймворк или стек текстом (например: FastAPI, "
             "Django REST, Express, Next.js и т.п.).",
@@ -395,6 +510,13 @@ async def process_framework_callback(
 
     await state.update_data(framework=label)
     await state.update_data(skills_selected=[], skills_custom=None)
+
+    logger.info(
+        "profile_framework_set user_id=%s stack=%s framework=%s",
+        callback.from_user.id,
+        stack_code,
+        label,
+    )
 
     # Переход к навыкам
     await _ask_skills(callback.message, state)
@@ -431,6 +553,14 @@ async def process_framework_multi_callback(
         await state.update_data(framework=framework_str)
         await state.update_data(frameworks_selected=None, framework_custom=None)
 
+        logger.info(
+            "profile_frameworks_multi_done user_id=%s stack=%s selected_count=%s has_custom=%s",
+            callback.from_user.id,
+            stack_code,
+            len(selected),
+            bool(custom),
+        )
+
         # идём к навыкам
         await state.update_data(skills_selected=[], skills_custom=None)
         await _ask_skills(callback.message, state)
@@ -444,6 +574,13 @@ async def process_framework_multi_callback(
             kb = InlineKeyboardBuilder()
             kb.button(text="Отменить редактирование", callback_data=PROFILE_CANCEL_CB)
             markup = kb.as_markup()
+
+        logger.info(
+            "profile_frameworks_multi_other_start user_id=%s stack=%s current_selected=%s",
+            callback.from_user.id,
+            stack_code,
+            len(selected),
+        )
 
         await callback.message.edit_text(
             "Напиши свои фреймворки текстом через запятую.\n"
@@ -486,12 +623,28 @@ async def process_framework_text(
         await state.update_data(framework_custom=message.text.strip())
         await state.update_data(framework_mode="multi")
         stack_code = data.get("stack")
+
+        logger.info(
+            "profile_frameworks_multi_custom_entered user_id=%s stack=%s text_len=%s",
+            message.from_user.id if message.from_user else None,
+            stack_code,
+            len(message.text.strip()),
+        )
+
         await _ask_frameworks_fullstack(message, state, stack_code)
         return
 
     # обычный режим: просто один фреймворк строкой
-    await state.update_data(framework=message.text.strip())
+    fw_text = message.text.strip()
+    await state.update_data(framework=fw_text)
     await state.update_data(skills_selected=[], skills_custom=None)
+
+    logger.info(
+        "profile_framework_text_set user_id=%s framework_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(fw_text),
+    )
+
     await _ask_skills(message, state)
 
 
@@ -506,6 +659,13 @@ async def _ask_skills(message: Message, state: FSMContext):
     kb = _build_skills_keyboard(selected, is_edit)
 
     await state.set_state(RegistrationStates.skills)
+
+    logger.info(
+        "profile_step_skills user_id=%s selected_count=%s is_edit=%s",
+        message.from_user.id if message.from_user else None,
+        len(selected),
+        is_edit,
+    )
 
     await message.answer(
         "Шаг 6 из 7.\n"
@@ -541,6 +701,13 @@ async def process_skill_callback(
         skills_str = "; ".join(parts) if parts else None
         await state.update_data(skills=skills_str)
 
+        logger.info(
+            "profile_skills_done user_id=%s selected_count=%s has_custom=%s",
+            callback.from_user.id,
+            len(selected),
+            bool(custom),
+        )
+
         # переходим к целям
         await state.set_state(RegistrationStates.goals)
 
@@ -566,6 +733,12 @@ async def process_skill_callback(
             kb = InlineKeyboardBuilder()
             kb.button(text="Отменить редактирование", callback_data=PROFILE_CANCEL_CB)
             markup = kb.as_markup()
+
+        logger.info(
+            "profile_skills_other_start user_id=%s selected_count=%s",
+            callback.from_user.id,
+            len(selected),
+        )
 
         await callback.message.edit_text(
             "Напиши свои навыки текстом через запятую.\n"
@@ -598,7 +771,15 @@ async def process_skills_custom(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(skills_custom=message.text.strip())
+    text = message.text.strip()
+    await state.update_data(skills_custom=text)
+
+    logger.info(
+        "profile_skills_custom_entered user_id=%s text_len=%s",
+        message.from_user.id if message.from_user else None,
+        len(text),
+    )
+
     # возвращаемся к выбору навыков
     await _ask_skills(message, state)
 
@@ -613,6 +794,12 @@ async def process_goal(
 ):
     _, goal_code = callback.data.split(":", 1)
     await state.update_data(goals=goal_code)
+
+    logger.info(
+        "profile_goal_set user_id=%s goal=%s",
+        callback.from_user.id,
+        goal_code,
+    )
 
     await state.set_state(RegistrationStates.about)
 
@@ -642,7 +829,8 @@ async def process_about(
     state: FSMContext,
     session: AsyncSession,
 ):
-    await state.update_data(about=message.text.strip())
+    about_text = message.text.strip()
+    await state.update_data(about=about_text)
     data = await state.get_data()
     await state.clear()
 
@@ -654,6 +842,16 @@ async def process_about(
     skills = data.get("skills")
     goals = data.get("goals")
     about = data.get("about")
+
+    logger.info(
+        "profile_about_received user_id=%s name_len=%s about_len=%s role=%s stack=%s goal=%s",
+        message.from_user.id if message.from_user else None,
+        len(name) if name else 0,
+        len(about_text),
+        role,
+        stack,
+        goals,
+    )
 
     profile = await update_profile_data(
         session,
@@ -669,10 +867,24 @@ async def process_about(
     )
 
     if not profile:
+        logger.warning(
+            "profile_save_failed user_id=%s",
+            message.from_user.id if message.from_user else None,
+        )
         await message.answer(
             "Не удалось сохранить профиль. Попробуй позже или заново через /edit_profile."
         )
         return
+
+    logger.info(
+        "profile_saved user_id=%s profile_id=%s role=%s stack=%s goal=%s has_avatar=%s",
+        message.from_user.id,
+        getattr(profile, "id", None),
+        getattr(profile, "role", None),
+        getattr(profile, "stack", None),
+        getattr(profile, "goals", None),
+        bool(getattr(profile, "avatar_file_id", None)),
+    )
 
     kb = ReplyKeyboardBuilder()
     kb.button(text="👥 Лента разработчиков")
@@ -695,6 +907,10 @@ async def process_about(
 
 @router.callback_query(F.data == "profile_rewards")
 async def on_profile_rewards(callback: CallbackQuery):
+    logger.info(
+        "profile_rewards_clicked user_id=%s",
+        callback.from_user.id,
+    )
     await callback.answer()
     await callback.message.answer(
         "Раздел с наградами пока в разработке. Скоро здесь будут ваши достижения."
@@ -703,6 +919,10 @@ async def on_profile_rewards(callback: CallbackQuery):
 
 @router.callback_query(F.data == "profile_edit")
 async def on_profile_edit(callback: CallbackQuery, state: FSMContext):
+    logger.info(
+        "profile_edit_clicked user_id=%s",
+        callback.from_user.id,
+    )
     await callback.answer()
     await _start_profile_flow(callback.message, state, allow_cancel=True)
 
@@ -720,17 +940,30 @@ async def on_profile_cancel_edit(
     - ничего не сохраняем,
     - показываем текущий профиль как он есть в БД.
     """
+    logger.info(
+        "profile_edit_cancel_clicked user_id=%s",
+        callback.from_user.id,
+    )
+
     await state.clear()
 
     # пробуем удалить сообщение с "шагом"
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "profile_edit_cancel_message_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
     profile = await get_profile(session, callback.from_user.id)
 
     if not profile:
+        logger.info(
+            "profile_edit_cancel_no_profile user_id=%s",
+            callback.from_user.id,
+        )
         await callback.answer("Редактирование отменено.", show_alert=False)
         await callback.message.answer(
             "Редактирование отменено.\n"
@@ -762,6 +995,12 @@ async def on_profile_cancel_edit(
             text,
             reply_markup=kb.as_markup(),
         )
+
+    logger.info(
+        "profile_edit_cancelled user_id=%s profile_id=%s",
+        callback.from_user.id,
+        getattr(profile, "id", None),
+    )
 
     await callback.answer(
         "Редактирование отменено, профиль не изменён.", show_alert=False

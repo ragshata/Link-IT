@@ -1,14 +1,20 @@
 # init_db.py
 import asyncio
 
-from db import engine, Base
-import models  # noqa: F401  # важно, чтобы модели были импортированы
+from db import engine
 
 
 async def init_db() -> None:
-    # Создаём все таблицы, которые описаны в models.* (через Base.metadata)
+    """
+    Проверка подключения к базе.
+
+    ВАЖНО:
+    - Схема БД теперь создаётся и изменяется ТОЛЬКО через Alembic миграции.
+    - Здесь мы просто убеждаемся, что можем открыть соединение.
+    """
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        # Ничего не делаем — если подключение успешно, значит всё ок.
+        pass
 
 
 if __name__ == "__main__":

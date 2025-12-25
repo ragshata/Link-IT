@@ -9,21 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aiogram import Bot
 
+from config import settings
 from db import async_session_maker
 from models import ConnectionRequest
 
 logger = logging.getLogger(__name__)
 
-# ===== настройки лимитов и напоминаний =====
-
-# Сколько заявок в день один пользователь может отправить
-MAX_CONNECTION_REQUESTS_PER_DAY = 10
+# ===== настройки напоминаний =====
 
 # Через сколько дней после принятия заявки напоминать
-REMINDERS_AFTER_DAYS = 1
+REMINDERS_AFTER_DAYS = settings.reminders_after_days
 
 # Как часто запускать проверку и окно для попадания в напоминание (в часах)
-REMINDERS_INTERVAL_HOURS = 6
+REMINDERS_INTERVAL_HOURS = settings.reminders_interval_hours
 
 
 # ===== рабочий цикл напоминаний =====
@@ -35,14 +33,18 @@ async def reminders_worker(bot: Bot) -> None:
     раз в REMINDERS_INTERVAL_HOURS часов проверяет принятые заявки
     и рассылает мягкие напоминания.
     """
-    logger.info("Reminders worker started")
+    logger.info(
+        "reminders_worker_started interval_hours=%s days_after=%s",
+        REMINDERS_INTERVAL_HOURS,
+        REMINDERS_AFTER_DAYS,
+    )
 
     while True:
         try:
             async with async_session_maker() as session:
                 await _process_reminders(bot, session)
         except asyncio.CancelledError:
-            logger.info("Reminders worker cancelled")
+            logger.info("reminders_worker_cancelled")
             break
         except Exception:
             logger.exception("Error in reminders worker loop")
@@ -61,6 +63,13 @@ async def _process_reminders(bot: Bot, session: AsyncSession) -> None:
 
     cutoff = now - timedelta(days=REMINDERS_AFTER_DAYS)
     window_start = cutoff - timedelta(hours=REMINDERS_INTERVAL_HOURS)
+
+    logger.debug(
+        "reminders_window now=%s window_start=%s cutoff=%s",
+        now.isoformat(),
+        window_start.isoformat(),
+        cutoff.isoformat(),
+    )
 
     stmt = select(ConnectionRequest).where(
         and_(
@@ -86,14 +95,26 @@ async def _process_reminders(bot: Bot, session: AsyncSession) -> None:
         "Если тема ещё актуальна — можешь написать собеседнику 🙂"
     )
 
+    success = 0
+    failed = 0
+
     for req in requests:
         for chat_id in {req.from_telegram_id, req.to_telegram_id}:
             try:
                 await bot.send_message(chat_id=chat_id, text=text)
+                success += 1
             except Exception:
+                failed += 1
                 # Не удалось написать (заблокировал бота и т.п.) — просто логируем и идём дальше
                 logger.debug(
                     "Failed to send reminder to %s for request %s",
                     chat_id,
                     req.id,
                 )
+
+    logger.info(
+        "reminders_sent success=%s failed=%s requests=%s",
+        success,
+        failed,
+        len(requests),
+    )

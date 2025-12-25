@@ -8,6 +8,8 @@ from .projects import (
     format_project_card,
     format_projects_feed,
 )
+from .safe import html_safe
+
 
 __all__ = [
     "format_profile_text",
@@ -15,4 +17,5 @@ __all__ = [
     "format_profiles_list_text",
     "format_project_card",
     "format_projects_feed",
+    "html_safe",
 ]

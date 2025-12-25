@@ -11,7 +11,7 @@ class Base(DeclarativeBase):
 
 engine = create_async_engine(
     settings.database_url,
-    echo=False,  # можно включить True для дебага
+    echo=(settings.env == "dev"),  # SQL-лог только в dev
 )
 
 async_session_maker = async_sessionmaker(

@@ -1,5 +1,7 @@
 # handlers/projects/feed.py
 
+import logging
+
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -12,6 +14,7 @@ from views import format_project_card
 from services import get_projects_feed, get_project
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 # Мапы код -> лейбл
 ROLE_CODE_TO_LABEL = {code: label for (label, code) in ROLE_OPTIONS}
@@ -55,7 +58,16 @@ async def _send_project_card(
     )
     kb.adjust(1, 2)
 
-    if getattr(project, "image_file_id", None):
+    has_photo = bool(getattr(project, "image_file_id", None))
+    logger.info(
+        "projects_feed_send_card project_id=%s owner_id=%s has_photo=%s chat_id=%s",
+        project.id,
+        getattr(project, "owner_telegram_id", None),
+        has_photo,
+        source_message.chat.id,
+    )
+
+    if has_photo:
         await bot.send_photo(
             chat_id=source_message.chat.id,
             photo=project.image_file_id,
@@ -80,18 +92,40 @@ async def _get_projfeed_project_at_index(
     ids: list[int] | None = data.get("projfeed_ids")
 
     if not ids:
+        logger.debug(
+            "projects_feed_get_index_empty requester_id=%s new_index=%s",
+            requester_id,
+            new_index,
+        )
         return None, None
 
     if new_index < 0 or new_index >= len(ids):
+        logger.debug(
+            "projects_feed_get_index_out_of_range requester_id=%s new_index=%s total=%s",
+            requester_id,
+            new_index,
+            len(ids),
+        )
         return None, None
 
     project_id = ids[new_index]
     project = await get_project(session, project_id)
     if not project:
+        logger.warning(
+            "projects_feed_get_index_project_missing requester_id=%s project_id=%s",
+            requester_id,
+            project_id,
+        )
         return None, None
 
     # не показываем свои проекты (на всякий случай)
     if project.owner_telegram_id == requester_id:
+        logger.info(
+            "projects_feed_skip_own_project requester_id=%s project_id=%s index=%s",
+            requester_id,
+            project_id,
+            new_index,
+        )
         if new_index + 1 < len(ids):
             return await _get_projfeed_project_at_index(
                 state=state,
@@ -102,6 +136,12 @@ async def _get_projfeed_project_at_index(
         return None, None
 
     await state.update_data(projfeed_index=new_index)
+    logger.debug(
+        "projects_feed_get_index_ok requester_id=%s project_id=%s index=%s",
+        requester_id,
+        project_id,
+        new_index,
+    )
     return project, new_index
 
 
@@ -146,6 +186,12 @@ async def projects_feed_handler(
     """
     Старт ленты проектов — сначала показываем экран с фильтрами.
     """
+    logger.info(
+        "projects_feed_filters_open user_id=%s chat_id=%s",
+        message.from_user.id,
+        message.chat.id,
+    )
+
     await state.clear()
     await state.set_state(ProjectsFeedFilterStates.choosing_filters)
     await state.update_data(
@@ -170,6 +216,11 @@ async def projects_feed_handler(
     ProjectsFeedFilterStates.choosing_filters, F.data == "proj_filt:role"
 )
 async def proj_filt_role_open(callback: CallbackQuery, state: FSMContext):
+    logger.info(
+        "projects_feed_filter_role_open user_id=%s",
+        callback.from_user.id,
+    )
+
     kb = InlineKeyboardBuilder()
     for label, code in ROLE_OPTIONS:
         kb.button(text=label, callback_data=f"proj_filt_role:{code}")
@@ -190,8 +241,17 @@ async def proj_filt_role_choose(callback: CallbackQuery, state: FSMContext):
 
     if code == "clear":
         await state.update_data(proj_filter_role_code=None)
+        logger.info(
+            "projects_feed_filter_role_cleared user_id=%s",
+            callback.from_user.id,
+        )
     else:
         await state.update_data(proj_filter_role_code=code)
+        logger.info(
+            "projects_feed_filter_role_set user_id=%s role_code=%s",
+            callback.from_user.id,
+            code,
+        )
 
     await callback.answer()
 
@@ -229,6 +289,11 @@ def _build_stack_filter_keyboard() -> InlineKeyboardBuilder:
     ProjectsFeedFilterStates.choosing_filters, F.data == "proj_filt:stack"
 )
 async def proj_filt_stack_open(callback: CallbackQuery, state: FSMContext):
+    logger.info(
+        "projects_feed_filter_stack_open user_id=%s",
+        callback.from_user.id,
+    )
+
     kb = _build_stack_filter_keyboard()
     await callback.answer()
     await callback.message.edit_text(
@@ -243,9 +308,19 @@ async def proj_filt_stack_choose(callback: CallbackQuery, state: FSMContext):
 
     if code == "clear":
         await state.update_data(proj_filter_stack_label=None)
+        logger.info(
+            "projects_feed_filter_stack_cleared user_id=%s",
+            callback.from_user.id,
+        )
     else:
         label = STACK_CODE_TO_LABEL.get(code, code)
         await state.update_data(proj_filter_stack_label=label)
+        logger.info(
+            "projects_feed_filter_stack_set user_id=%s stack_code=%s label=%s",
+            callback.from_user.id,
+            code,
+            label,
+        )
 
     await callback.answer()
 
@@ -266,6 +341,11 @@ async def proj_filt_stack_choose(callback: CallbackQuery, state: FSMContext):
     ProjectsFeedFilterStates.choosing_filters, F.data == "proj_filt:level"
 )
 async def proj_filt_level_open(callback: CallbackQuery, state: FSMContext):
+    logger.info(
+        "projects_feed_filter_level_open user_id=%s",
+        callback.from_user.id,
+    )
+
     kb = InlineKeyboardBuilder()
     kb.button(text="Junior", callback_data="proj_filt_level:Junior")
     kb.button(text="Middle", callback_data="proj_filt_level:Middle")
@@ -288,8 +368,17 @@ async def proj_filt_level_choose(callback: CallbackQuery, state: FSMContext):
 
     if lvl == "clear":
         await state.update_data(proj_filter_level_label=None)
+        logger.info(
+            "projects_feed_filter_level_cleared user_id=%s",
+            callback.from_user.id,
+        )
     else:
         await state.update_data(proj_filter_level_label=lvl)
+        logger.info(
+            "projects_feed_filter_level_set user_id=%s level=%s",
+            callback.from_user.id,
+            lvl,
+        )
 
     await callback.answer()
 
@@ -331,6 +420,11 @@ async def proj_filt_reset(callback: CallbackQuery, state: FSMContext):
     )
     data = await state.get_data()
 
+    logger.info(
+        "projects_feed_filters_reset user_id=%s",
+        callback.from_user.id,
+    )
+
     text = "Фильтры сброшены.\n\n" + _format_filters_summary(data)
     kb = _build_filters_keyboard()
     await callback.answer()
@@ -360,6 +454,14 @@ async def proj_filt_show(
     # Для уровня, если выбрано "Любой", то вообще не фильтруем
     level_filter = level_label if level_label and level_label != "Любой" else None
 
+    logger.info(
+        "projects_feed_show user_id=%s role=%s stack=%s level=%s",
+        callback.from_user.id,
+        role_label,
+        stack_label,
+        level_filter,
+    )
+
     projects = await get_projects_feed(
         session,
         limit=50,
@@ -370,6 +472,10 @@ async def proj_filt_show(
     )
 
     if not projects:
+        logger.info(
+            "projects_feed_show_no_results user_id=%s",
+            callback.from_user.id,
+        )
         await callback.answer()
         await callback.message.edit_text(
             "По таким фильтрам пока нет проектов.\n"
@@ -382,8 +488,21 @@ async def proj_filt_show(
         projfeed_index=0,
     )
 
+    logger.info(
+        "projects_feed_show_results user_id=%s count=%s",
+        callback.from_user.id,
+        len(projects),
+    )
+
     await callback.answer()
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        logger.debug(
+            "projects_feed_show_delete_filters_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
     await _send_project_card(
         source_message=callback.message,
@@ -408,6 +527,14 @@ async def proj_next_callback(
         index = 0
 
     new_index = index + 1
+
+    logger.debug(
+        "projects_feed_next user_id=%s from_index=%s to_index=%s",
+        callback.from_user.id,
+        index,
+        new_index,
+    )
+
     project, _ = await _get_projfeed_project_at_index(
         state=state,
         session=session,
@@ -416,6 +543,11 @@ async def proj_next_callback(
     )
 
     if not project:
+        logger.info(
+            "projects_feed_next_end user_id=%s from_index=%s",
+            callback.from_user.id,
+            index,
+        )
         await callback.answer("Это был последний проект", show_alert=False)
         await callback.message.answer(
             "Ты посмотрел все проекты в ленте.\nЗагляни позже — появятся новые."
@@ -433,7 +565,11 @@ async def proj_next_callback(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "projects_feed_next_delete_old_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
 
 @router.callback_query(F.data == "proj_prev")
@@ -449,6 +585,14 @@ async def proj_prev_callback(
         index = 0
 
     new_index = index - 1
+
+    logger.debug(
+        "projects_feed_prev user_id=%s from_index=%s to_index=%s",
+        callback.from_user.id,
+        index,
+        new_index,
+    )
+
     if new_index < 0:
         await callback.answer("Это первый проект", show_alert=False)
         return
@@ -475,4 +619,8 @@ async def proj_prev_callback(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "projects_feed_prev_delete_old_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )

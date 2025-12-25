@@ -1,6 +1,5 @@
 # main.py
 import asyncio
-import logging
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
@@ -14,29 +13,30 @@ from handlers import (
     profile_router,
     browse_router,
     projects_router,
-    requests_router,
+    connection_requests_router,
     devfeed_filters_router,
     devfeed_router,
 )
+
+from handlers.errors import setup_error_handlers
+from logging_config import setup_logging
 from middlewares.db import DbSessionMiddleware
+from middlewares.logging_context import LoggingContextMiddleware
 from services.reminders import reminders_worker
 
 
 async def main() -> None:
     # 1. Логирование
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        handlers=[
-            logging.StreamHandler(),  # в консоль
-            logging.FileHandler("bot.log", encoding="utf-8"),  # в файл bot.log
-        ],
-    )
-    logger = logging.getLogger(__name__)
-    logger.info("Starting LinkIT bot...")
+    logger = setup_logging()
+    logger.info("Starting LinkIT bot in %s environment", settings.env)
 
-    # 2. Инициализация БД
-    await init_db()
+    # 2. Инициализация БД (если тут всё упало — логируем и выходим)
+    try:
+        await init_db()
+    except Exception:
+        logger.exception("Database initialization failed")
+        return
+
     logger.info("Database is initialized")
 
     # 3. Бот и диспетчер
@@ -46,7 +46,10 @@ async def main() -> None:
     )
     dp = Dispatcher()
 
-    # 3.1. Middleware с сессией БД + глобальный try/except на апдейт
+    # 3.1. Middleware
+    # Сначала — контекст логов (user/chat/update),
+    # потом — сессия БД (чтобы в логах уже были user_id/chat_id).
+    dp.update.outer_middleware(LoggingContextMiddleware())
     dp.update.outer_middleware(DbSessionMiddleware())
 
     # 4. Роутеры
@@ -54,16 +57,30 @@ async def main() -> None:
     dp.include_router(profile_router)
     dp.include_router(browse_router)
     dp.include_router(projects_router)
-    dp.include_router(requests_router)
+    dp.include_router(connection_requests_router)
     dp.include_router(devfeed_filters_router)  # сначала фильтры
     dp.include_router(devfeed_router)  # потом сама лента
 
-    # 5. Фоновый воркер напоминаний
-    reminders_task = asyncio.create_task(reminders_worker(bot))
+    logger.info("Routers and middlewares are configured")
 
-    # 6. Стартуем поллинг
+    # 5. Error-handlers (глобальный ловец исключений в апдейтах)
+    setup_error_handlers(dp, bot)
+    logger.info("Error handlers are set up")
+
+    # 6. Фоновый воркер напоминаний
+    reminders_task = asyncio.create_task(
+        reminders_worker(bot),
+        name="reminders_worker",
+    )
+    logger.info("Reminders worker started")
+
+    # 7. Стартуем поллинг
     try:
+        logger.info("Starting polling")
         await dp.start_polling(bot)
+    except asyncio.CancelledError:
+        # Нормальное завершение (Ctrl+C и т.п.)
+        logger.info("Bot polling cancelled, shutting down...")
     except Exception:
         logger.exception("Bot stopped by unexpected error")
     finally:
@@ -71,6 +88,12 @@ async def main() -> None:
         reminders_task.cancel()
         with suppress(asyncio.CancelledError):
             await reminders_task
+
+        # Закрываем HTTP-сессию бота
+        with suppress(Exception):
+            await bot.session.close()
+
+        logger.info("Bot shutdown complete")
 
 
 if __name__ == "__main__":

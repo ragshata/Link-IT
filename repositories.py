@@ -1,6 +1,6 @@
 from typing import Sequence
 
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Profile, Project, ConnectionRequest
@@ -235,6 +235,25 @@ async def get_pending_request_between(
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def count_connection_requests_from_user_today(
+    session: AsyncSession,
+    *,
+    from_id: int,
+) -> int:
+    """Сколько заявок пользователь отправил за текущие сутки (UTC)."""
+    from datetime import datetime as _dt
+
+    now = _dt.utcnow()
+    day_start = _dt(year=now.year, month=now.month, day=now.day)
+
+    stmt = select(func.count(ConnectionRequest.id)).where(
+        ConnectionRequest.from_telegram_id == from_id,
+        ConnectionRequest.created_at >= day_start,
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one()
 
 
 async def create_connection_request(

@@ -1,39 +1,71 @@
 # config.py
-import os
-from dataclasses import dataclass
+from __future__ import annotations
 
-from dotenv import load_dotenv
+from functools import lru_cache
+from typing import Literal, Optional
 
-
-# грузим переменные из .env файла в окружение
-load_dotenv()
-
-
-@dataclass
-class Settings:
-    bot_token: str
-    database_url: str
-    max_connection_requests_per_day: int
-    reminders_after_days: int
-    reminders_interval_hours: int
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def get_settings() -> Settings:
-    return Settings(
-        bot_token=os.getenv("BOT_TOKEN", ""),
-        database_url=os.getenv(
-            "DATABASE_URL",
-            "sqlite+aiosqlite:///./linkit.db",
-        ),
-        # сколько заявок в день можно отправить одному пользователю
-        max_connection_requests_per_day=int(
-            os.getenv("MAX_CONNECTION_REQUESTS_PER_DAY", "10")
-        ),
-        # через сколько дней после принятия заявки слать напоминание
-        reminders_after_days=int(os.getenv("REMINDERS_AFTER_DAYS", "3")),
-        # как часто проверять напоминания (в часах)
-        reminders_interval_hours=int(os.getenv("REMINDERS_INTERVAL_HOURS", "6")),
+class Settings(BaseSettings):
+    # Telegram bot
+    bot_token: str = Field(alias="BOT_TOKEN")
+
+    # Database
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///./linkit.db",
+        alias="DATABASE_URL",
     )
+
+    # Environment
+    env: Literal["dev", "stage", "prod"] = Field("dev", alias="ENV")
+    log_level: str = Field("INFO", alias="LOG_LEVEL")
+
+    # Limits & reminders
+    max_connection_requests_per_day: int = Field(
+        10,
+        alias="MAX_CONNECTION_REQUESTS_PER_DAY",
+    )
+    reminders_after_days: int = Field(
+        3,
+        alias="REMINDERS_AFTER_DAYS",
+    )
+    reminders_interval_hours: int = Field(
+        6,
+        alias="REMINDERS_INTERVAL_HOURS",
+    )
+
+    # Admin / alerts
+    admin_chat_id: Optional[int] = Field(
+        default=None,
+        alias="ADMIN_CHAT_ID",
+    )
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    @field_validator("reminders_after_days", mode="before")
+    @classmethod
+    def parse_reminders_after_days(cls, v):
+        """
+        Поддержка формата:
+        - просто число: "3"
+        - несколько чисел через запятую: "2,7" -> берём первое (2)
+        """
+        if isinstance(v, str):
+            first = v.split(",")[0].strip()
+            return int(first)
+        return int(v)
+
+
+@lru_cache
+def get_settings() -> Settings:
+    # кэшируем, чтобы не читать .env каждый раз
+    return Settings()
 
 
 settings = get_settings()

@@ -1,6 +1,7 @@
 # handlers/projects/create.py
 
 from types import SimpleNamespace
+import logging
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
@@ -15,10 +16,11 @@ from constants import (
     PROJECT_STATUS_OPTIONS,
     PROJECT_STATUS_LABELS,
 )
-from views import format_project_card
+from views import format_project_card, html_safe
 from services import create_user_project
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 # Вспомогательные мапы код -> лейбл
 STACK_CODE_TO_LABEL: dict[str, str] = {}
@@ -126,6 +128,14 @@ async def _show_project_preview(message: Message, state: FSMContext):
     data = await state.get_data()
     preview_project = _build_preview_project_from_state(data)
 
+    logger.info(
+        "project_preview_show owner_id=%s title=%s status=%s team_limit=%s",
+        message.from_user.id,
+        getattr(preview_project, "title", None),
+        getattr(preview_project, "status", None),
+        getattr(preview_project, "team_limit", None),
+    )
+
     text = (
         "Проверь проект перед публикацией 👇\n\n"
         f"{format_project_card(preview_project)}"
@@ -155,6 +165,8 @@ async def start_project_registration(message: Message, state: FSMContext):
     Вызов этого метода — старт мастера создания проекта.
     Можно дергать из других хендлеров (меню и т.п.).
     """
+    logger.info("project_create_wizard_start user_id=%s", message.from_user.id)
+
     await state.clear()
     await state.set_state(ProjectStates.photo)
 
@@ -177,11 +189,22 @@ async def start_project_registration(message: Message, state: FSMContext):
 async def project_photo_message(message: Message, state: FSMContext):
     file_id = message.photo[-1].file_id
     await state.update_data(image_file_id=file_id)
+
+    logger.info(
+        "project_create_set_photo user_id=%s file_id=%s",
+        message.from_user.id,
+        file_id,
+    )
+
     await _ask_title(message, state)
 
 
 @router.callback_query(ProjectStates.photo, F.data == "project_skip_photo")
 async def project_photo_skip(callback: CallbackQuery, state: FSMContext):
+    logger.info(
+        "project_create_skip_photo user_id=%s",
+        callback.from_user.id,
+    )
     await _ask_title(callback.message, state)
     await callback.answer()
 
@@ -191,7 +214,7 @@ async def _ask_title(message: Message, state: FSMContext):
     await message.answer(
         "Шаг 2.\n"
         "Напиши короткое название проекта.\n"
-        "Например: «Платформа для IT-нетворкинга»."
+        "Например: «Платформа для IT-нетворкинга».",
     )
 
 
@@ -200,7 +223,15 @@ async def _ask_title(message: Message, state: FSMContext):
 
 @router.message(ProjectStates.title, F.text)
 async def project_title(message: Message, state: FSMContext):
-    await state.update_data(title=message.text.strip())
+    title = (message.text or "").strip()
+    await state.update_data(title=title)
+
+    logger.info(
+        "project_create_set_title user_id=%s title=%s",
+        message.from_user.id,
+        title,
+    )
+
     await state.update_data(stack_selected=[], stack_custom=None)
     await _ask_stack(message, state)
 
@@ -253,6 +284,12 @@ async def project_stack_callback(callback: CallbackQuery, state: FSMContext):
         final_stack = "; ".join(parts) if parts else None
         await state.update_data(stack=final_stack)
 
+        logger.info(
+            "project_create_set_stack_done user_id=%s stack=%s",
+            callback.from_user.id,
+            final_stack,
+        )
+
         await _ask_idea(callback.message, state)
         await callback.answer()
         return
@@ -266,13 +303,19 @@ async def project_stack_callback(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    # toggle выбора
     if code in selected:
         selected.remove(code)
     else:
         selected.append(code)
 
     await state.update_data(stack_selected=selected)
+
+    logger.info(
+        "project_create_stack_toggle user_id=%s code=%s selected=%s",
+        callback.from_user.id,
+        code,
+        selected,
+    )
 
     kb = _build_stack_keyboard(selected)
     await callback.message.edit_text(
@@ -286,7 +329,15 @@ async def project_stack_callback(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ProjectStates.stack_custom, F.text)
 async def project_stack_custom(message: Message, state: FSMContext):
-    await state.update_data(stack_custom=message.text.strip())
+    custom = (message.text or "").strip()
+    await state.update_data(stack_custom=custom)
+
+    logger.info(
+        "project_create_stack_custom user_id=%s value=%s",
+        message.from_user.id,
+        custom,
+    )
+
     await _ask_stack(message, state)
 
 
@@ -304,7 +355,15 @@ async def _ask_idea(message: Message, state: FSMContext):
 
 @router.message(ProjectStates.idea, F.text)
 async def project_idea(message: Message, state: FSMContext):
-    await state.update_data(idea=message.text.strip())
+    idea = (message.text or "").strip()
+    await state.update_data(idea=idea)
+
+    logger.info(
+        "project_create_set_idea user_id=%s len=%s",
+        message.from_user.id,
+        len(idea),
+    )
+
     await _ask_status(message, state)
 
 
@@ -320,7 +379,7 @@ async def _ask_status(message: Message, state: FSMContext):
     kb.adjust(2)
 
     await message.answer(
-        "Шаг 5.\n" "На какой стадии сейчас проект?\n" "Выбери статус:",
+        "Шаг 5.\nНа какой стадии сейчас проект?\nВыбери статус:",
         reply_markup=kb.as_markup(),
     )
 
@@ -335,6 +394,12 @@ async def project_status_callback(
     await state.update_data(status=code)
 
     status_label = PROJECT_STATUS_LABELS.get(code, code)
+    logger.info(
+        "project_create_set_status user_id=%s status=%s",
+        callback.from_user.id,
+        code,
+    )
+
     await callback.answer(f"Статус: {status_label}", show_alert=False)
 
     await _ask_needs_now(callback.message, state)
@@ -358,7 +423,15 @@ async def _ask_needs_now(message: Message, state: FSMContext):
 
 @router.message(ProjectStates.needs_now, F.text)
 async def project_needs_now(message: Message, state: FSMContext):
-    await state.update_data(needs_now=message.text.strip())
+    needs_now = (message.text or "").strip()
+    await state.update_data(needs_now=needs_now)
+
+    logger.info(
+        "project_create_set_needs_now user_id=%s len=%s",
+        message.from_user.id,
+        len(needs_now),
+    )
+
     await state.update_data(looking_selected=[])
     await _ask_looking_for(message, state)
 
@@ -403,6 +476,12 @@ async def project_looking_for_callback(
 
     if code == "skip":
         await state.update_data(looking_for_role=None)
+
+        logger.info(
+            "project_create_looking_for_skip user_id=%s",
+            callback.from_user.id,
+        )
+
         await _ask_level(callback.message, state)
         await callback.answer()
         return
@@ -411,17 +490,30 @@ async def project_looking_for_callback(
         labels = [ROLE_CODE_TO_LABEL.get(c, c) for c in selected]
         final_roles = ", ".join(labels) if labels else None
         await state.update_data(looking_for_role=final_roles)
+
+        logger.info(
+            "project_create_set_looking_for user_id=%s roles=%s",
+            callback.from_user.id,
+            final_roles,
+        )
+
         await _ask_level(callback.message, state)
         await callback.answer()
         return
 
-    # toggle роли
     if code in selected:
         selected.remove(code)
     else:
         selected.append(code)
 
     await state.update_data(looking_selected=selected)
+
+    logger.info(
+        "project_create_looking_for_toggle user_id=%s code=%s selected=%s",
+        callback.from_user.id,
+        code,
+        selected,
+    )
 
     kb = _build_looking_keyboard(selected)
     await callback.message.edit_text(
@@ -447,7 +539,7 @@ async def _ask_level(message: Message, state: FSMContext):
     kb.adjust(2)
 
     await message.edit_text(
-        "Шаг 8.\n" "Какой уровень тебя больше всего интересует в этом проекте?",
+        "Шаг 8.\nКакой уровень тебя больше всего интересует в этом проекте?",
         reply_markup=kb.as_markup(),
     )
 
@@ -467,6 +559,12 @@ async def project_level_callback(
     level_label = mapping.get(code, code)
     await state.update_data(level=level_label)
 
+    logger.info(
+        "project_create_set_level user_id=%s level=%s",
+        callback.from_user.id,
+        level_label,
+    )
+
     await state.set_state(ProjectStates.extra)
 
     await callback.message.edit_text(
@@ -474,6 +572,7 @@ async def project_level_callback(
         "Напиши важные детали: формат участия (вечера/выходные), "
         "занятость, нюансы.\n"
         "Если ничего добавлять не хочешь — напиши «-».",
+        reply_markup=None,
     )
     await callback.answer()
 
@@ -486,11 +585,18 @@ async def project_extra(
     message: Message,
     state: FSMContext,
 ):
-    extra = message.text.strip()
+    extra = (message.text or "").strip()
     if extra == "-":
         extra = None
 
     await state.update_data(extra=extra)
+
+    logger.info(
+        "project_create_set_extra user_id=%s has_text=%s",
+        message.from_user.id,
+        bool(extra),
+    )
+
     await _ask_team_limit(message, state)
 
 
@@ -534,6 +640,12 @@ async def project_team_limit_callback(
 
     if code == "skip":
         await state.update_data(team_limit=None)
+
+        logger.info(
+            "project_create_team_limit_skip user_id=%s",
+            callback.from_user.id,
+        )
+
         await callback.answer("Лимит по людям не указан", show_alert=False)
         await _ask_chat_link(callback.message, state)
         return
@@ -558,6 +670,12 @@ async def project_team_limit_custom_message(
 
     if raw in ("-", "—", ""):
         await state.update_data(team_limit=None)
+
+        logger.info(
+            "project_create_team_limit_cleared user_id=%s",
+            message.from_user.id,
+        )
+
         await _ask_chat_link(message, state)
         return
 
@@ -574,6 +692,13 @@ async def project_team_limit_custom_message(
         return
 
     await state.update_data(team_limit=value)
+
+    logger.info(
+        "project_create_team_limit_set user_id=%s team_limit=%s",
+        message.from_user.id,
+        value,
+    )
+
     await _ask_chat_link(message, state)
 
 
@@ -602,6 +727,12 @@ async def project_chat_link_skip(
     state: FSMContext,
 ):
     await state.update_data(chat_link=None)
+
+    logger.info(
+        "project_create_chat_link_skip user_id=%s",
+        callback.from_user.id,
+    )
+
     await callback.answer("Без ссылки на чат", show_alert=False)
     await _show_project_preview(callback.message, state)
 
@@ -618,6 +749,13 @@ async def project_chat_link_message(
         chat_link = raw
 
     await state.update_data(chat_link=chat_link)
+
+    logger.info(
+        "project_create_chat_link_set user_id=%s has_link=%s",
+        message.from_user.id,
+        bool(chat_link),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -629,22 +767,22 @@ async def project_confirm_cancel(
     callback: CallbackQuery,
     state: FSMContext,
 ):
-    """
-    Отмена публикации проекта на этапе предпросмотра:
-    - чистим состояние,
-    - удаляем сообщение с предпросмотром,
-    - пишем короткое уведомление пользователю.
-    """
+    logger.info(
+        "project_create_cancel user_id=%s",
+        callback.from_user.id,
+    )
+
     await state.clear()
 
-    # Пытаемся удалить превью проекта
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "project_create_cancel_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
-    # Сообщаем пользователю, что всё отменено
-    # Реплай-клава с меню у тебя остаётся та же, что была.
     await callback.message.answer(
         "Создание проекта отменено.\n\n"
         "Если захочешь — нажми «🆕 Новый проект» и начни заново."
@@ -690,6 +828,16 @@ async def project_confirm_publish(
         chat_link=chat_link,
     )
 
+    logger.info(
+        "project_created project_id=%s owner_id=%s title=%s status=%s team_limit=%s has_chat_link=%s",
+        project.id,
+        callback.from_user.id,
+        project.title,
+        project.status,
+        project.team_limit,
+        bool(project.chat_link),
+    )
+
     await callback.answer("Проект опубликован ✅", show_alert=False)
 
     final_text = (
@@ -706,6 +854,10 @@ async def proj_edit_menu_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ):
+    logger.info(
+        "project_edit_menu_open user_id=%s",
+        callback.from_user.id,
+    )
     kb = _build_edit_menu_keyboard()
     await callback.answer()
     await callback.message.answer(
@@ -723,7 +875,11 @@ async def proj_edit_back_callback(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "project_edit_back_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
     await _show_project_preview(callback.message, state)
 
@@ -737,12 +893,12 @@ async def proj_edit_title_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("title") or "—"
+    cur = html_safe(data.get("title"), default="—")
 
     await state.set_state(ProjectStates.edit_title)
     await callback.answer()
     await callback.message.answer(
-        f"Текущее название:\n<b>{cur}</b>\n\n" "Напиши новое название проекта:",
+        f"Текущее название:\n<b>{cur}</b>\n\nНапиши новое название проекта:",
     )
 
 
@@ -751,7 +907,15 @@ async def proj_edit_title_message(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(title=message.text.strip())
+    title = (message.text or "").strip()
+    await state.update_data(title=title)
+
+    logger.info(
+        "project_edit_set_title user_id=%s title=%s",
+        message.from_user.id,
+        title,
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -764,7 +928,7 @@ async def proj_edit_idea_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("idea") or "—"
+    cur = html_safe(data.get("idea"), default="—")
 
     await state.set_state(ProjectStates.edit_idea)
     await callback.answer()
@@ -778,7 +942,15 @@ async def proj_edit_idea_message(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(idea=message.text.strip())
+    idea = (message.text or "").strip()
+    await state.update_data(idea=idea)
+
+    logger.info(
+        "project_edit_set_idea user_id=%s len=%s",
+        message.from_user.id,
+        len(idea),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -791,7 +963,7 @@ async def proj_edit_needs_now_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("needs_now") or "—"
+    cur = html_safe(data.get("needs_now"), default="—")
 
     await state.set_state(ProjectStates.edit_needs_now)
     await callback.answer()
@@ -807,7 +979,15 @@ async def proj_edit_needs_now_message(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(needs_now=message.text.strip())
+    needs_now = (message.text or "").strip()
+    await state.update_data(needs_now=needs_now)
+
+    logger.info(
+        "project_edit_set_needs_now user_id=%s len=%s",
+        message.from_user.id,
+        len(needs_now),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -820,7 +1000,7 @@ async def proj_edit_extra_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("extra") or "—"
+    cur = html_safe(data.get("extra"), default="—")
 
     await state.set_state(ProjectStates.edit_extra)
     await callback.answer()
@@ -837,10 +1017,17 @@ async def proj_edit_extra_message(
     message: Message,
     state: FSMContext,
 ):
-    extra = message.text.strip()
+    extra = (message.text or "").strip()
     if extra == "-":
         extra = None
     await state.update_data(extra=extra)
+
+    logger.info(
+        "project_edit_set_extra user_id=%s has_text=%s",
+        message.from_user.id,
+        bool(extra),
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -854,7 +1041,7 @@ async def proj_edit_status_callback(
 ):
     data = await state.get_data()
     cur_code = data.get("status", "idea")
-    cur_label = PROJECT_STATUS_LABELS.get(cur_code, cur_code)
+    cur_label = html_safe(PROJECT_STATUS_LABELS.get(cur_code, cur_code))
 
     await state.set_state(ProjectStates.edit_status)
     await callback.answer()
@@ -865,7 +1052,7 @@ async def proj_edit_status_callback(
     kb.adjust(2)
 
     await callback.message.answer(
-        f"Текущий статус проекта: <b>{cur_label}</b>\n\n" "Выбери новый статус:",
+        f"Текущий статус проекта: <b>{cur_label}</b>\n\nВыбери новый статус:",
         reply_markup=kb.as_markup(),
     )
 
@@ -879,6 +1066,13 @@ async def proj_edit_status_choice(
 ):
     _, code = callback.data.split(":", 1)
     await state.update_data(status=code)
+
+    logger.info(
+        "project_edit_set_status user_id=%s status=%s",
+        callback.from_user.id,
+        code,
+    )
+
     await callback.answer()
     await _show_project_preview(callback.message, state)
 
@@ -892,7 +1086,7 @@ async def proj_edit_stack_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("stack") or "—"
+    cur = html_safe(data.get("stack"), default="—")
 
     await state.update_data(edit_stack_selected=[], edit_stack_custom=None)
     await state.set_state(ProjectStates.edit_stack)
@@ -930,6 +1124,13 @@ async def proj_edit_stack_choice(
             edit_stack_selected=[],
             edit_stack_custom=None,
         )
+
+        logger.info(
+            "project_edit_set_stack user_id=%s stack=%s",
+            callback.from_user.id,
+            final_stack,
+        )
+
         await callback.answer()
         await _show_project_preview(callback.message, state)
         return
@@ -943,13 +1144,19 @@ async def proj_edit_stack_choice(
         await callback.answer()
         return
 
-    # toggle
     if code in selected:
         selected.remove(code)
     else:
         selected.append(code)
 
     await state.update_data(edit_stack_selected=selected)
+
+    logger.info(
+        "project_edit_stack_toggle user_id=%s code=%s selected=%s",
+        callback.from_user.id,
+        code,
+        selected,
+    )
 
     kb = _build_stack_keyboard(selected)
     await callback.message.edit_text(
@@ -965,7 +1172,15 @@ async def proj_edit_stack_custom_message(
     message: Message,
     state: FSMContext,
 ):
-    await state.update_data(edit_stack_custom=message.text.strip())
+    custom = (message.text or "").strip()
+    await state.update_data(edit_stack_custom=custom)
+
+    logger.info(
+        "project_edit_stack_custom user_id=%s value=%s",
+        message.from_user.id,
+        custom,
+    )
+
     await state.set_state(ProjectStates.edit_stack)
     kb = _build_stack_keyboard(
         (await state.get_data()).get("edit_stack_selected", []) or []
@@ -987,7 +1202,7 @@ async def proj_edit_roles_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("looking_for_role") or "—"
+    cur = html_safe(data.get("looking_for_role"), default="—")
 
     await state.update_data(edit_looking_selected=[])
     await state.set_state(ProjectStates.edit_looking_for)
@@ -1019,6 +1234,12 @@ async def proj_edit_roles_choice(
             looking_for_role=None,
             edit_looking_selected=[],
         )
+
+        logger.info(
+            "project_edit_looking_for_skip user_id=%s",
+            callback.from_user.id,
+        )
+
         await callback.answer()
         await _show_project_preview(callback.message, state)
         return
@@ -1030,17 +1251,30 @@ async def proj_edit_roles_choice(
             looking_for_role=final_roles,
             edit_looking_selected=[],
         )
+
+        logger.info(
+            "project_edit_set_looking_for user_id=%s roles=%s",
+            callback.from_user.id,
+            final_roles,
+        )
+
         await callback.answer()
         await _show_project_preview(callback.message, state)
         return
 
-    # toggle
     if code in selected:
         selected.remove(code)
     else:
         selected.append(code)
 
     await state.update_data(edit_looking_selected=selected)
+
+    logger.info(
+        "project_edit_looking_for_toggle user_id=%s code=%s selected=%s",
+        callback.from_user.id,
+        code,
+        selected,
+    )
 
     kb = _build_looking_keyboard(selected)
     await callback.message.edit_text(
@@ -1060,7 +1294,7 @@ async def proj_edit_level_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("level") or "—"
+    cur = html_safe(data.get("level"), default="—")
 
     await state.set_state(ProjectStates.edit_level)
     await callback.answer()
@@ -1096,6 +1330,12 @@ async def proj_edit_level_choice(
     level_label = mapping.get(code, code)
     await state.update_data(level=level_label)
 
+    logger.info(
+        "project_edit_set_level user_id=%s level=%s",
+        callback.from_user.id,
+        level_label,
+    )
+
     await callback.answer()
     await _show_project_preview(callback.message, state)
 
@@ -1120,7 +1360,7 @@ async def proj_edit_team_limit_callback(
 
     kb = _build_team_limit_keyboard()
     await callback.message.answer(
-        f"Сейчас лимит по людям: <b>{cur_label}</b>.\n\n"
+        f"Сейчас лимит по людям: <b>{html_safe(cur_label, default='не указан')}</b>.\n\n"
         "Выбери — задать новое число или не указывать:",
         reply_markup=kb.as_markup(),
     )
@@ -1137,6 +1377,12 @@ async def proj_edit_team_limit_choice(
 
     if code == "skip":
         await state.update_data(team_limit=None)
+
+        logger.info(
+            "project_edit_team_limit_cleared user_id=%s",
+            callback.from_user.id,
+        )
+
         await callback.answer("Лимит убран", show_alert=False)
         await _show_project_preview(callback.message, state)
         return
@@ -1161,6 +1407,12 @@ async def proj_edit_team_limit_custom_message(
 
     if raw in ("-", "—", ""):
         await state.update_data(team_limit=None)
+
+        logger.info(
+            "project_edit_team_limit_cleared user_id=%s",
+            message.from_user.id,
+        )
+
         await _show_project_preview(message, state)
         return
 
@@ -1177,6 +1429,13 @@ async def proj_edit_team_limit_custom_message(
         return
 
     await state.update_data(team_limit=value)
+
+    logger.info(
+        "project_edit_team_limit_set user_id=%s team_limit=%s",
+        message.from_user.id,
+        value,
+    )
+
     await _show_project_preview(message, state)
 
 
@@ -1189,7 +1448,7 @@ async def proj_edit_chat_link_callback(
     state: FSMContext,
 ):
     data = await state.get_data()
-    cur = data.get("chat_link") or "—"
+    cur = html_safe(data.get("chat_link"), default="—")
 
     await state.set_state(ProjectStates.edit_chat_link)
     await callback.answer()
@@ -1213,4 +1472,11 @@ async def proj_edit_chat_link_message(
         chat_link = raw
 
     await state.update_data(chat_link=chat_link)
+
+    logger.info(
+        "project_edit_chat_link_set user_id=%s has_link=%s",
+        message.from_user.id,
+        bool(chat_link),
+    )
+
     await _show_project_preview(message, state)

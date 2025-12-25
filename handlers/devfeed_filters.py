@@ -1,5 +1,4 @@
-# handlers/devfeed_filters.py
-
+import logging
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
@@ -12,6 +11,7 @@ from models import Profile
 from constants import ROLE_OPTIONS, STACK_OPTIONS, STACK_LABELS, GOAL_OPTIONS
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 # ===== хелперы для ленты =====
@@ -33,6 +33,13 @@ async def send_dev_profile_card(
         3) Предыдущий / Следующий
     """
     text = format_profile_public(profile)
+
+    logger.info(
+        "devfeed_filters_profile_card_sent user_id=%s target_id=%s has_avatar=%s",
+        source_message.from_user.id if source_message.from_user else None,
+        profile.telegram_id,
+        bool(getattr(profile, "avatar_file_id", None)),
+    )
 
     kb = InlineKeyboardBuilder()
     kb.button(
@@ -132,6 +139,11 @@ async def _render_filters_menu(
     kb.adjust(2, 2, 1)
 
     if message is not None:
+        logger.info(
+            "devfeed_filters_menu_show_first user_id=%s filters=%s",
+            message.from_user.id if message.from_user else None,
+            filters,
+        )
         # первый запуск из "👥 Лента разработчиков"
         sent = await message.answer(text, reply_markup=kb.as_markup())
         await state.update_data(
@@ -142,9 +154,21 @@ async def _render_filters_menu(
         chat_id = data.get("devfeed_filters_chat_id")
         msg_id = data.get("devfeed_filters_msg_id")
         if not chat_id or not msg_id:
+            logger.debug(
+                "devfeed_filters_menu_update_missing_message chat_id=%s msg_id=%s filters=%s",
+                chat_id,
+                msg_id,
+                filters,
+            )
             # если по какой-то причине нет сохранённого сообщения — ничего не делаем
             return
         try:
+            logger.info(
+                "devfeed_filters_menu_update chat_id=%s msg_id=%s filters=%s",
+                chat_id,
+                msg_id,
+                filters,
+            )
             await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=msg_id,
@@ -153,7 +177,12 @@ async def _render_filters_menu(
             )
         except Exception:
             # сообщение могли удалить — не критичная ошибка
-            pass
+            logger.debug(
+                "devfeed_filters_menu_update_failed chat_id=%s msg_id=%s",
+                chat_id,
+                msg_id,
+                exc_info=True,
+            )
 
 
 def _filter_profile_by_stack_and_nonempty(
@@ -194,6 +223,10 @@ async def devfeed_filters_entry(
     state: FSMContext,
     bot: Bot,
 ):
+    logger.info(
+        "devfeed_filters_entry user_id=%s",
+        message.from_user.id if message.from_user else None,
+    )
     # не сбрасываем фильтры — пользователь может возвращаться и докручивать
     await _render_filters_menu(state=state, bot=bot, message=message)
 
@@ -207,6 +240,10 @@ async def devf_filter_reset(
     state: FSMContext,
     bot: Bot,
 ):
+    logger.info(
+        "devfeed_filters_reset user_id=%s",
+        callback.from_user.id,
+    )
     await callback.answer("Фильтры сброшены", show_alert=False)
     await state.update_data(devfeed_filters={})
     await _render_filters_menu(state=state, bot=bot)
@@ -217,6 +254,10 @@ async def devf_filter_role(
     callback: CallbackQuery,
     state: FSMContext,
 ):
+    logger.info(
+        "devfeed_filters_role_open user_id=%s",
+        callback.from_user.id,
+    )
     await callback.answer()
     kb = InlineKeyboardBuilder()
     for label, code in ROLE_OPTIONS:
@@ -238,6 +279,12 @@ async def devf_set_role(
 ):
     _, role_code = callback.data.split(":", 1)
 
+    logger.info(
+        "devfeed_filters_role_set user_id=%s role_code=%s",
+        callback.from_user.id,
+        role_code,
+    )
+
     data = await state.get_data()
     filters: dict = data.get("devfeed_filters", {}) or {}
 
@@ -254,7 +301,11 @@ async def devf_set_role(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "devfeed_filters_role_msg_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
     await callback.answer("Роль выбрана", show_alert=False)
 
@@ -264,6 +315,10 @@ async def devf_filter_goal(
     callback: CallbackQuery,
     state: FSMContext,
 ):
+    logger.info(
+        "devfeed_filters_goal_open user_id=%s",
+        callback.from_user.id,
+    )
     await callback.answer()
     kb = InlineKeyboardBuilder()
     for label, code in GOAL_OPTIONS:
@@ -285,6 +340,12 @@ async def devf_set_goal(
 ):
     _, goal_code = callback.data.split(":", 1)
 
+    logger.info(
+        "devfeed_filters_goal_set user_id=%s goal_code=%s",
+        callback.from_user.id,
+        goal_code,
+    )
+
     data = await state.get_data()
     filters: dict = data.get("devfeed_filters", {}) or {}
 
@@ -296,7 +357,11 @@ async def devf_set_goal(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "devfeed_filters_goal_msg_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
     await callback.answer("Цель выбрана", show_alert=False)
 
@@ -309,6 +374,12 @@ async def devf_filter_stack(
     data = await state.get_data()
     filters: dict = data.get("devfeed_filters", {}) or {}
     role_code = filters.get("role")
+
+    logger.info(
+        "devfeed_filters_stack_open user_id=%s role_code=%s",
+        callback.from_user.id,
+        role_code,
+    )
 
     if not role_code:
         await callback.answer("Сначала выбери роль 👆", show_alert=True)
@@ -343,6 +414,12 @@ async def devf_set_stack(
 ):
     _, stack_code = callback.data.split(":", 1)
 
+    logger.info(
+        "devfeed_filters_stack_set user_id=%s stack_code=%s",
+        callback.from_user.id,
+        stack_code,
+    )
+
     data = await state.get_data()
     filters: dict = data.get("devfeed_filters", {}) or {}
 
@@ -354,7 +431,11 @@ async def devf_set_stack(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "devfeed_filters_stack_msg_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
     await callback.answer("Стек выбран", show_alert=False)
 
@@ -365,6 +446,11 @@ async def devf_clear_stack(
     state: FSMContext,
     bot: Bot,
 ):
+    logger.info(
+        "devfeed_filters_stack_clear user_id=%s",
+        callback.from_user.id,
+    )
+
     data = await state.get_data()
     filters: dict = data.get("devfeed_filters", {}) or {}
 
@@ -376,18 +462,30 @@ async def devf_clear_stack(
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "devfeed_filters_stack_clear_msg_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
 
     await callback.answer("Стек сброшен", show_alert=False)
 
 
 @router.callback_query(F.data == "devf_cancel_submenu")
 async def devf_cancel_submenu(callback: CallbackQuery):
+    logger.info(
+        "devfeed_filters_submenu_cancel user_id=%s",
+        callback.from_user.id,
+    )
     # просто удаляем окно с выбором
     try:
         await callback.message.delete()
     except Exception:
-        pass
+        logger.debug(
+            "devfeed_filters_submenu_delete_failed user_id=%s",
+            callback.from_user.id,
+            exc_info=True,
+        )
     await callback.answer()
 
 
@@ -410,6 +508,12 @@ async def devf_filter_show(
     goal_code = filters.get("goal")
     stack_code = filters.get("stack")
 
+    logger.info(
+        "devfeed_filters_show user_id=%s filters=%s",
+        callback.from_user.id,
+        filters,
+    )
+
     # достаём кандидатов по роли/цели из БД
     profiles = await search_profiles_for_user(
         session,
@@ -419,13 +523,27 @@ async def devf_filter_show(
         limit=100,
     )
 
+    raw_count = len(profiles)
+
     # доп. фильтрация: стек + выкинуть пустые профили
     profiles = [
         p for p in profiles if _filter_profile_by_stack_and_nonempty(p, stack_code)
     ]
 
+    filtered_count = len(profiles)
+
     # на всякий случай — убираем самого себя
     profiles = [p for p in profiles if p.telegram_id != callback.from_user.id]
+
+    final_count = len(profiles)
+
+    logger.info(
+        "devfeed_filters_result user_id=%s raw=%s after_stack=%s final=%s",
+        callback.from_user.id,
+        raw_count,
+        filtered_count,
+        final_count,
+    )
 
     if not profiles:
         await callback.message.answer(

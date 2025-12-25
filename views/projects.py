@@ -3,6 +3,7 @@ from typing import Sequence
 
 from models import Project
 from constants import STACK_LABELS, ROLE_OPTIONS
+from views.safe import html_safe
 
 ROLE_LABELS = {code: label for (label, code) in ROLE_OPTIONS}
 
@@ -12,13 +13,13 @@ def format_project_card(project: Project) -> str:
     Одна карточка проекта (лента + предпросмотр).
     """
     stack_code = getattr(project, "stack", None)
-    stack_label = STACK_LABELS.get(stack_code, stack_code or "—")
+    stack_label = html_safe(STACK_LABELS.get(stack_code, stack_code or "—"))
 
     role_code = getattr(project, "looking_for_role", None)
-    role_label = ROLE_LABELS.get(role_code, role_code or "—")
+    role_label = html_safe(ROLE_LABELS.get(role_code, role_code or "—"))
 
-    level_label = getattr(project, "level", None) or "—"
-    status_label = getattr(project, "status", None) or "—"
+    level_label = html_safe(getattr(project, "level", None) or "—")
+    status_label = html_safe(getattr(project, "status", None) or "—")
 
     # Текущие участники и лимит
     team_limit = getattr(project, "team_limit", None)
@@ -27,16 +28,16 @@ def format_project_card(project: Project) -> str:
         current_members = 1  # как минимум владелец
 
     lines: list[str] = []
-    lines.append(f"Проект: {project.title}")
+    lines.append(f"Проект: {html_safe(project.title)}")
     lines.append(f"Статус: {status_label}")
     lines.append(f"Стек: {stack_label}")
-    lines.append(f"Идея: {project.idea}")
+    lines.append(f"Идея: {html_safe(project.idea)}")
     lines.append(f"Кого ищем: {role_label}")
     lines.append(f"Уровень: {level_label}")
 
     needs_now = getattr(project, "needs_now", None)
     if needs_now:
-        lines.append(f"Что сейчас нужно: {needs_now}")
+        lines.append(f"Что сейчас нужно: {html_safe(needs_now)}")
 
     if team_limit is not None:
         free_slots = max(team_limit - current_members, 0)
@@ -50,10 +51,9 @@ def format_project_card(project: Project) -> str:
 
     extra = getattr(project, "extra", None)
     if extra:
-        lines.append(f"Ожидания / формат: {extra}")
+        lines.append(f"Ожидания / формат: {html_safe(extra)}")
 
     # chat_link намеренно НЕ показываем
-
     return "\n".join(lines)
 
 
